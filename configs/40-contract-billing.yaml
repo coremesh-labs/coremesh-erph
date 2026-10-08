@@ -1,0 +1,19 @@
+# Haskell-Plugins (coremesh-erph). Der Host lädt sie zusätzlich zu den configs
+# des Kerns und von coremesh-erp:
+#
+#   cd ../coremesh
+#   bin/host -config configs,../coremesh-erp/configs,../coremesh-erph/configs
+#
+# Listen ersetzen beim Zusammenführen die frühere Datei: extra_plugin_dirs nennt
+# deshalb beide Verzeichnisse. Pfade relativ zum Arbeitsverzeichnis des Hosts.
+host:
+  extra_plugin_dirs: [../coremesh-erp/bin/plugins, ../coremesh-erph/bin/plugins]
+
+plugins:
+  # Vertragsbuchung: Sollstellung der Verträge (contract) über die Vorerfassung
+  # des Hauptbuchs (ledger). Oberfläche im Modul Verträge (Buchungsläufe,
+  # „Buchen …“ am Vertrag).
+  contract-billing:
+    version: 0.1.0
+    databases:
+      main: { access: write }        # Tabellen contract_billing__* via DBSchema.Init

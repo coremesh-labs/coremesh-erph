@@ -1,0 +1,7 @@
+-- CoreMesh ERP in Haskell: mehrere Plugins, ein Projekt.
+-- Das SDK liegt im Kern-Repository (Nachbarverzeichnis ../coremesh).
+packages:
+  plugins/*/*.cabal
+  ../coremesh/sdk/haskell
+
+tests: True
