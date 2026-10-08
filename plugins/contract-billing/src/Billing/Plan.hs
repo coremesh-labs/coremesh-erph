@@ -16,10 +16,14 @@
 --
 -- Ein Beleg je Vertrag und Buchungsdatum. Je Fälligkeit zwei Positionen:
 --
---   * Forderung (wir erhalten): Soll Abstimmkonto der Vertragsart (Debitor),
+--   * Forderung (wir erhalten): Soll Abstimmkonto des Zahlers (Debitor),
 --     Haben Sachkonto der Kondition (Erlös).
 --   * Verbindlichkeit (wir zahlen): Soll Sachkonto der Kondition (Aufwand),
 --     Haben Abstimmkonto (Kreditor).
+--
+-- Das Abstimmkonto steht in den Buchungskreisdaten des Zahlers (Vertragspartner
+-- oder abweichender Zahler der Kondition) in der Rolle der Vertragsart. Fehlen
+-- sie oder ist der Partner gesperrt, wird der Vertrag nicht gebucht (Meldung).
 --
 -- Negative Beträge (Minderungen, Gutschriften) tauschen Soll und Haben; ist
 -- ein Beleg per Saldo negativ, bekommt er die Gutschrift-Belegart (DG bzw.
@@ -42,6 +46,7 @@ module Billing.Plan
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Containers.ListUtils (nubOrd)
 import Data.Maybe (isNothing, listToMaybe)
 import Data.Scientific (Scientific)
 import Data.Set qualified as Set
@@ -63,6 +68,7 @@ data Input = Input
   , inMeasurements :: [Measurement]
   , inAccounts :: Map Text Account
   , inFieldStatus :: FieldStatus
+  , inPartnerAccounts :: Map (Text, Text) PartnerAccount -- ^ (Partner, Rolle) → Buchungskreisdaten im Buchungskreis
   , inPosted :: [Posted] -- ^ schon vermerkte Sollstellungen (vorerfasst oder gebucht)
   , inCorrectionDate :: Day -- ^ Buchungsdatum der Nachberechnungen (Tag des Laufs)
   }
@@ -117,10 +123,22 @@ plan until Input {..} = (concat docs, concat msgs)
 
     forContract c = case Map.lookup (cType c) inTypes of
       Nothing -> ([], [(cId c, "Vertragsart " <> cType c <> " fehlt")])
-      Just ct -> case ctReconciliation ct of
-        Nothing -> ([], [(cId c, "Vertragsart " <> cType c <> ": Abstimmkonto fehlt (Verträge → Vertragsarten)")])
-        Just recon ->
-          let conds = Map.findWithDefault [] (cId c) conditionsOf
+      Just ct ->
+        let conds0 = Map.findWithDefault [] (cId c) conditionsOf
+            -- Abstimmkonto je Zahler (Vertragspartner oder abweichender Zahler) aus seinen Buchungskreisdaten in der Rolle der Vertragsart
+            payers = nubOrd (cPartner c : [p | k <- conds0, Just p <- [kPayer k]])
+            accountOf p = case Map.lookup (p, ctRole ct) inPartnerAccounts of
+              Nothing -> Left ("Partnerkonto fehlt: " <> p <> " hat in der Rolle " <> ctRole ct <> " keine Buchungskreisdaten (Partnermodul) – Vertrag nicht gebucht")
+              Just a
+                | paPostingBlock a -> Left ("Buchungssperre: " <> p <> " in der Rolle " <> ctRole ct <> " – Vertrag nicht gebucht")
+                | otherwise -> maybe (Left ("Partnerkonto fehlt: " <> p <> " hat in der Rolle " <> ctRole ct <> " kein Abstimmkonto – Vertrag nicht gebucht")) Right (paAccount a)
+            accounts = [(p, accountOf p) | p <- payers]
+            problems' = [(cId c, e) | (_, Left e) <- accounts]
+            reconOf = Map.fromList [(p, a) | (p, Right a) <- accounts]
+         in if not (null problems')
+              then ([], problems')
+              else
+          let conds = conds0
               postings = Map.findWithDefault [] (cId c) postedOf
               -- Auch Perioden rechnen, die schon vermerkt sind, aber (z. B. nach
               -- geändertem Fälligkeitstag) erst nach dem Stichtag fällig wären.
@@ -138,7 +156,8 @@ plan until Input {..} = (concat docs, concat msgs)
               docType es
                 | sum (map (dueAmount . eDue) es) < 0 = maybe (if payable then "KG" else "DG") id (ctCreditDocumentType ct)
                 | otherwise = maybe (if payable then "KR" else "DR") id (ctDocumentType ct)
-              mk (date, es) = Doc c date (docType es) es (concatMap (linesFor c payable recon) es)
+              recon e = Map.findWithDefault "" (maybe (cPartner c) id (kPayer (eCondition e))) reconOf
+              mk (date, es) = Doc c date (docType es) es (concatMap (\e -> linesFor c payable (recon e) e) es)
            in (map mk (Map.toList byDate), errors)
 
     -- Abgleich der gerechneten Fälligkeiten mit dem Vermerkten.

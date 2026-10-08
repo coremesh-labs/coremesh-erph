@@ -1,7 +1,8 @@
 -- | Ein Buchungslauf – ohne SQL, nur über Objects und Actions:
 --
 --   1. Stammdaten aus dem Cache ("Billing.Cache"), die schon vermerkten
---      Sollstellungen frisch aus ContractPosting (Datenstrom).
+--      Sollstellungen (ContractPosting) und die Buchungskreisdaten der Partner
+--      (PartnerCompanyCode, Abstimmkonto) frisch als Datenstrom.
 --   2. Nur Verträge, die der Benutzer sehen darf (Account.Check: Contract.read
 --      je Buchungskreis und Vertragsart).
 --   3. Planen ("Billing.Plan"): offene Fälligkeiten und Nachberechnung schon
@@ -90,6 +91,8 @@ runBilling cache call RunRequest {..} = do
   accounts <- map account <$> get Accounts
   status <- fieldStatus <$> get FieldStatuses
   postings <- postedOf sys rrCompany
+  -- Buchungskreisdaten der Partner (Abstimmkonto, Buchungssperre) – wie die Vermerke immer frisch
+  partnerAccounts <- map partnerAccount <$> readAll sys "PartnerCompanyCode" [("company_code", String rrCompany)]
   today <- localDay . zonedTimeToLocalTime <$> getZonedTime
   let input =
         Input
@@ -100,6 +103,7 @@ runBilling cache call RunRequest {..} = do
           , inMeasurements = measurements
           , inAccounts = Map.fromList [(aNumber a, a) | a <- accounts]
           , inFieldStatus = status
+          , inPartnerAccounts = Map.fromList [((paPartner a, paRole a), a) | a <- partnerAccounts]
           , inPosted = postings
           , inCorrectionDate = min today rrTo
           }

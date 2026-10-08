@@ -1,6 +1,7 @@
 -- | Daten aus den anderen Plugins, gelesen als Datenstrom (Rohwerte der
 -- Tabellen, siehe crud ReadList): Verträge, Konditionen und Objekte (contract),
--- Bemessungen (realestate), Konten und Feldstatus (ledger).
+-- Bemessungen (realestate), Konten und Feldstatus (ledger), Buchungskreisdaten
+-- der Partner (partner).
 module Billing.Data
   ( Record
   , records
@@ -11,6 +12,7 @@ module Billing.Data
   , Measurement (..)
   , Account (..)
   , Posted (..)
+  , PartnerAccount (..)
   , PostingKind (..)
   , FieldStatus
   , contractType
@@ -20,6 +22,7 @@ module Billing.Data
   , measurement
   , account
   , posted
+  , partnerAccount
   , fieldStatus
   , text
   , textMaybe
@@ -95,7 +98,7 @@ bool k r = case KM.lookup (K.fromText k) r of
 data ContractType = ContractType
   { ctCode :: Text
   , ctDirection :: Text -- ^ RECEIVABLE | PAYABLE
-  , ctReconciliation :: Maybe Text -- ^ Abstimmkonto (Debitor bzw. Kreditor)
+  , ctRole :: Text -- ^ Rolle des Vertragspartners; ihre Buchungskreisdaten tragen das Abstimmkonto
   , ctDocumentType :: Maybe Text -- ^ Belegart der Sollstellung
   , ctCreditDocumentType :: Maybe Text -- ^ Belegart, wenn der Beleg per Saldo eine Gutschrift ist
   , ctAutoPost :: Bool -- ^ geprüfte Vorerfassung gleich buchen (sonst offen lassen)
@@ -160,6 +163,18 @@ data Account = Account
   }
   deriving stock (Show)
 
+-- | Buchungskreisdaten eines Partners in einer Finanzrolle (PartnerCompanyCode).
+data PartnerAccount = PartnerAccount
+  { paPartner :: Text
+  , paRole :: Text
+  , paAccount :: Maybe Text -- ^ Abstimmkonto
+  , paPostingBlock :: Bool
+  }
+  deriving stock (Show)
+
+partnerAccount :: Record -> PartnerAccount
+partnerAccount r = PartnerAccount (text "bp_id" r) (text "role_code" r) (textMaybe "reconciliation_account" r) (bool "posting_block" r)
+
 -- | Erste Sollstellung zur Fälligkeit oder Nachberechnung zum Lauf.
 data PostingKind = Original | Correction
   deriving stock (Eq, Show)
@@ -212,7 +227,7 @@ contractType r =
   ContractType
     { ctCode = text "code" r
     , ctDirection = text "direction" r
-    , ctReconciliation = textMaybe "reconciliation_account" r
+    , ctRole = text "main_role" r
     , ctDocumentType = textMaybe "posting_document_type" r
     , ctCreditDocumentType = textMaybe "credit_document_type" r
     , ctAutoPost = bool "auto_post" r

@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.3.0 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.4.0 |
 
 ## Bauen, testen, starten
 
@@ -105,8 +105,9 @@ vor jedem Lauf die offenen Vorerfassungen ab (Events gehen höchstens einmal zu)
   machen den betroffenen Ausschnitt ungültig; er wird beim nächsten Gebrauch neu geladen.
 - **Sicherheitsnetz:** spätestens nach `cache_ttl` (Standard 1 h) neu laden;
   `ContractBilling.refresh` verwirft die Kopie sofort, `ContractBilling.cache` zeigt den Zustand.
-- Die vermerkten Fälligkeiten (`ContractPosting`) liest jeder Lauf **frisch** – hier darf nichts
-  veralten, sonst würde doppelt gebucht.
+- Die vermerkten Fälligkeiten (`ContractPosting`) und die Buchungskreisdaten der Partner
+  (`PartnerCompanyCode`: Abstimmkonto, Buchungssperre) liest jeder Lauf **frisch** – hier darf
+  nichts veralten (Doppelbuchung, falsches Konto, gesperrter Partner).
 - **Rechte:** Gebucht werden nur Verträge, die der Benutzer lesen darf (`Account.Check`,
   `Contract.read` je Buchungskreis und Vertragsart); die Buchung selbst prüft der Ledger.
 
@@ -154,11 +155,15 @@ gebucht):
 
 | | Soll | Haben |
 |---|---|---|
-| Forderung (Vertragsart Richtung „wir erhalten“) | Abstimmkonto der Vertragsart (Debitor) | Sachkonto der Kondition (Kontenfindung) |
-| Verbindlichkeit („wir zahlen“) | Sachkonto der Kondition | Abstimmkonto (Kreditor) |
+| Forderung (Vertragsart Richtung „wir erhalten“) | Abstimmkonto des Zahlers (Debitor) | Sachkonto der Kondition (Kontenfindung) |
+| Verbindlichkeit („wir zahlen“) | Sachkonto der Kondition | Abstimmkonto des Zahlers (Kreditor) |
 
-- **Einstellungen** an der Vertragsart (Gruppe „Buchung“): Abstimmkonto (Pflicht), Belegart
-  (leer = DR bzw. KR), Belegart für Gutschriften (leer = DG bzw. KG), automatisch buchen.
+- **Abstimmkonto:** aus den Buchungskreisdaten des Zahlers – Vertragspartner oder abweichender
+  Zahler der Kondition – in der Rolle der Vertragsart (Partnermodul, `PartnerCompanyCode`; jeder
+  Lauf liest sie frisch). Fehlen sie oder trägt der Partner eine **Buchungssperre**, wird der
+  Vertrag nicht gebucht und der Lauf meldet es.
+
+- **Einstellungen** an der Vertragsart (Gruppe „Buchung“): Belegart (leer = DR bzw. KR), Belegart für Gutschriften (leer = DG bzw. KG), automatisch buchen.
 - **Negative Beträge** (Minderungen, Gutschriften) tauschen Soll und Haben; ist der Beleg per
   Saldo negativ, bekommt er die Gutschrift-Belegart.
 - **Kontierungen:** Vertrag, Mietobjekt (Objekt der Kondition, sonst Hauptobjekt – nur

@@ -93,9 +93,9 @@ planTests check = do
   let d = fromGregorian
       types =
         Map.fromList
-          [ ("MV", ContractType "MV" "RECEIVABLE" (Just "1200") Nothing Nothing False)
-          , ("VS", ContractType "VS" "PAYABLE" (Just "2900") (Just "KR") (Just "KX") True)
-          , ("XX", ContractType "XX" "RECEIVABLE" Nothing Nothing Nothing False)
+          [ ("MV", ContractType "MV" "RECEIVABLE" "TENANT" Nothing Nothing False)
+          , ("VS", ContractType "VS" "PAYABLE" "CREDITOR" (Just "KR") (Just "KX") True)
+          , ("XX", ContractType "XX" "RECEIVABLE" "GUARANTOR" Nothing Nothing False)
           ]
       contract' cid typ = Contract "1000" cid typ "ACTIVE" "P1" "EUR" "" (d 2026 1 1) openEnd
       cond cid typ acc amount =
@@ -124,12 +124,19 @@ planTests check = do
           , inMeasurements = []
           , inAccounts = accounts
           , inFieldStatus = status
+          , inPartnerAccounts =
+              Map.fromList
+                [ (("P1", "TENANT"), PartnerAccount "P1" "TENANT" (Just "1200") False)
+                , (("P1", "CREDITOR"), PartnerAccount "P1" "CREDITOR" (Just "2900") False)
+                , (("JC", "TENANT"), PartnerAccount "JC" "TENANT" (Just "1210") False)
+                , (("ZZ", "TENANT"), PartnerAccount "ZZ" "TENANT" (Just "1200") True)
+                ]
           , inPosted = [booked "MV-1" "KM" "SKR25-6000" 2026 1 80000]
           , inCorrectionDate = d 2026 2 20
           }
       (docs, msgs) = plan (d 2026 2 28) input
       docOf cid date = [x | x <- docs, cId (dContract x) == cid, dDate x == date]
-  check "Meldung ohne Abstimmkonto" [("XX-1", "Vertragsart XX: Abstimmkonto fehlt (Verträge → Vertragsarten)")] msgs
+  check "Meldung ohne Partnerkonto" [("XX-1", "Partnerkonto fehlt: P1 hat in der Rolle GUARANTOR keine Buchungskreisdaten (Partnermodul) – Vertrag nicht gebucht")] msgs
   -- Januar KM schon gebucht: die Minderung für Januar ist nachträglich (Nachberechnung am Lauftag), im Februar beides
   check "schon Gebuchtes übersprungen" 0 (length (docOf "MV-1" (d 2026 1 3)))
   check "Januar nachträglich" [[("MIN", Correction)]] [[(kType (eCondition e), eKind e) | e <- dEntries x] | x <- docOf "MV-1" (d 2026 2 20)]
@@ -154,6 +161,15 @@ planTests check = do
       (docs2, msgs2) = plan (d 2026 2 28) twice
   check "Überschneidung: kein Beleg für den Vertrag" 0 (length [x | x <- docs2, cId (dContract x) == "MV-1"])
   check "Überschneidung: Meldung" [("MV-1", "Kondition KM: Zeitscheiben überschneiden sich (01.02.2026) – Vertrag nicht gebucht")] [m | m@("MV-1", _) <- msgs2]
+
+  -- Abweichender Zahler: sein Abstimmkonto; ohne Konto oder gesperrt: Vertrag nicht gebucht
+  let payerInput pay = input {inContracts = take 1 (inContracts input), inConditions = [(cond "MV-1" "KM" "6000" 80000) {kPayer = Just pay}], inPosted = []}
+      (jcDocs, _) = plan (d 2026 1 31) (payerInput "JC")
+  check "Zahler: sein Abstimmkonto und Kunde" [("1210", "JC")] [(lAccount l, v) | x <- jcDocs, l <- take 1 (dLines x), ("sd_customer_id", v) <- lFields l]
+  check "Zahler ohne Konto" [("MV-1", "Partnerkonto fehlt: NN hat in der Rolle TENANT keine Buchungskreisdaten (Partnermodul) – Vertrag nicht gebucht")]
+    (snd (plan (d 2026 1 31) (payerInput "NN")))
+  check "Zahler gesperrt" ([], [("MV-1", "Buchungssperre: ZZ in der Rolle TENANT – Vertrag nicht gebucht")])
+    (let (ds, ms) = plan (d 2026 1 31) (payerInput "ZZ") in (map dDate ds, ms))
 
   correctionTests check input booked cond
   where
