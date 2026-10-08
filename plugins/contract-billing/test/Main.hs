@@ -4,11 +4,14 @@ module Main (main) where
 import Control.Monad (unless)
 import Data.IORef
 import Data.Map.Strict qualified as Map
+import Data.List (sort)
+import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Time.Calendar
 import System.Exit (exitFailure)
 
 import Billing.Data
+import Billing.Loan
 import Billing.Plan
 import Billing.Schedule
 
@@ -73,16 +76,25 @@ main = do
   check "einmalig" [Due (d 2026 5 5) (d 2026 5 5) (d 2026 5 5) (d 2026 5 5) (d 2026 5 5) 777] (dues Once InAdvance 1 (fixed 777) (d 2026 5 5) (d 2026 12 31) (d 2026 6 1))
   check "einmalig, noch nicht fällig" [] (dues Once InAdvance 1 (fixed 777) (d 2026 5 5) (d 2026 12 31) (d 2026 5 4))
   -- Einmalig mit eigenem Fälligkeitsdatum (Bereitstellungsgebühr bei Übergabe)
-  check "einmalig am Fälligkeitsdatum" [d 2026 6 1] (dates (dueOnce (Just (d 2026 6 1)) (fixed 5000) (d 2026 5 5) openEnd (d 2026 6 30)))
-  check "einmalig: Fälligkeit nach dem Stichtag" [] (dueOnce (Just (d 2026 6 1)) (fixed 5000) (d 2026 5 5) openEnd (d 2026 5 31))
-  check "einmalig: Fälligkeit vor Beginn gilt ab Beginn" [d 2026 5 5] (dates (dueOnce (Just (d 2026 4 1)) (fixed 5000) (d 2026 5 5) openEnd (d 2026 5 31)))
-  check "einmalig ohne Datum: am Beginn" [d 2026 5 5] (dates (dueOnce Nothing (fixed 5000) (d 2026 5 5) openEnd (d 2026 5 31)))
+  check "einmalig am Fälligkeitsdatum" [d 2026 6 1] (dates (dueOnce 1 (Just (d 2026 6 1)) (fixed 5000) (d 2026 5 5) openEnd (d 2026 6 30)))
+  check "einmalig: Fälligkeit nach dem Stichtag" [] (dueOnce 1 (Just (d 2026 6 1)) (fixed 5000) (d 2026 5 5) openEnd (d 2026 5 31))
+  check "einmalig: Fälligkeit vor Beginn gilt ab Beginn" [d 2026 5 5] (dates (dueOnce 1 (Just (d 2026 4 1)) (fixed 5000) (d 2026 5 5) openEnd (d 2026 5 31)))
+  -- Kaution in drei Monatsraten: Rest auf die erste Rate, je Rate eine Fälligkeit
+  let dep = dueOnce 3 Nothing (fixed 255001) (d 2026 1 31) openEnd (d 2026 12 31)
+  check "Kaution: Raten" [85001, 85000, 85000] (amounts dep)
+  check "Kaution: Fälligkeiten (Monatsende)" [d 2026 1 31, d 2026 2 28, d 2026 3 31] (dates dep)
+  check "Kaution: erste Rate deckt den Beginn ab" [d 2026 1 31, d 2026 2 28, d 2026 3 31] (map dueFrom dep)
+  check "einmalig mit Fälligkeit: Periode = Beginn" [(d 2026 5 5, d 2026 6 1)] [(dueFrom x, dueDate x) | x <- dueOnce 1 (Just (d 2026 6 1)) (fixed 5000) (d 2026 5 5) openEnd (d 2026 6 30)]
+  check "Kaution: nur fällige Raten" 2 (length (dueOnce 3 Nothing (fixed 3) (d 2026 1 31) openEnd (d 2026 3 30)))
+  check "Rückzahlung (negativ) in Raten" [-34, -33, -33] (amounts (dueOnce 3 Nothing (fixed (-100)) (d 2026 1 1) openEnd (d 2026 12 31)))
+  check "einmalig ohne Datum: am Beginn" [d 2026 5 5] (dates (dueOnce 1 Nothing (fixed 5000) (d 2026 5 5) openEnd (d 2026 5 31)))
 
   -- Runden
   check "roundDiv positiv (halbe Einheit aufrunden)" [2, 1, 2, 2] [roundDiv 3 2, roundDiv 4 3, roundDiv 5 3, roundDiv 7 4]
   check "roundDiv negativ" (-2) (roundDiv (-3) 2)
 
   planTests check
+  loanTests check
 
   n <- readIORef failures
   if n == 0 then putStrLn "alle Tests bestanden" else exitFailure
@@ -99,7 +111,7 @@ planTests check = do
           ]
       contract' cid typ = Contract "1000" cid typ "ACTIVE" "P1" "EUR" "" (d 2026 1 1) openEnd
       cond cid typ acc amount =
-        Condition cid typ "" False amount Nothing Monthly 3 Nothing InAdvance (Just acc) Nothing (d 2026 1 1) openEnd
+        Condition cid typ "" False amount Nothing Monthly 3 Nothing 1 InAdvance (Just acc) Nothing (d 2026 1 1) openEnd
       -- Vermerk (vorerfasst oder gebucht) einer ganzen Monatsperiode
       booked cid typ acc y m amount =
         Posted cid typ "" (d y m 1) (d y m (gregorianMonthLength y m)) (Just (d y m 1)) (d y m 3) amount Original acc (Just "WG001")
@@ -124,6 +136,8 @@ planTests check = do
           , inMeasurements = []
           , inAccounts = accounts
           , inFieldStatus = status
+          , inLoans = []
+          , inLoanPayments = []
           , inPartnerAccounts =
               Map.fromList
                 [ (("P1", "TENANT"), PartnerAccount "P1" "TENANT" (Just "1200") False)
@@ -250,3 +264,78 @@ correctionTests check input booked cond = do
   -- Kreditorenvertrag: Gutschrift mit der Belegart der Vertragsart
   let vs = input {inContracts = [inContracts input !! 1], inConditions = [cond "VS-1" "EN" "7300" 10000], inPosted = [booked "VS-1" "EN" "7300" 2026 1 12000]}
   check "Kreditor: Gutschrift-Belegart der Vertragsart" ["KX"] [dDocumentType x | x <- fst (plan (d 2026 1 31) vs)]
+
+-- | Tilgungsplan: Zinsmethoden, Annuität, Sondertilgung, Zinswechsel,
+-- Ratentilgung, endfällig mit Vertragsende, Übernahme; Einbindung in die Planung.
+loanTests :: (forall a. (Eq a, Show a) => String -> a -> a -> IO ()) -> IO ()
+loanTests check = do
+  let d = fromGregorian
+      terms =
+        LoanTerms
+          { lnContract = "DA-1", lnFrom = d 2026 1 30, lnTo = openEnd, lnPrincipal = 10000000, lnStart = d 2026 1 30, lnTakeover = False
+          , lnRepayment = Annuity, lnRate = 36 / 10, lnInstallment = 500000, lnFrequency = Monthly, lnDueDay = 30, lnDayCount = D30360
+          , lnLoanAccount = "3150", lnInterestAccount = "7310", lnInterestType = "DZ", lnPrincipalType = "DT", lnSpecialType = "DS"
+          , lnDisbursementType = "AZ"
+          }
+      plan' ts ps end h = schedule ts ps end h
+      regular = filter ((== Regular) . rKind)
+  check "30/360: 31.01.–28.02. (Monatsende = 30.)" (30 / 360) (yearFraction D30360 (d 2026 1 31) (d 2026 2 28))
+  check "30/360: 15.01.–15.03." (60 / 360) (yearFraction D30360 (d 2026 1 15) (d 2026 3 15))
+  check "30/360: 28.02.–30.03." (30 / 360) (yearFraction D30360 (d 2026 2 28) (d 2026 3 30))
+  check "act/360" (29 / 360) (yearFraction ACT360 (d 2026 1 30) (d 2026 2 28))
+  check "Zinssatz" (Just (69 / 20)) (parseRate "3,45")
+
+  -- Annuität 5.000,00 bei 100.000,00 und 3,6 %: Zins 300,00, Tilgung 4.700,00
+  let a = plan' [terms] [] openEnd (d 2026 4 30)
+  check "Auszahlung" [Row Disbursement (d 2026 1 30) (d 2026 1 30) (d 2026 1 30) 0 10000000 10000000] (take 1 a)
+  check "Annuität: Zins" [30000, 28590, 27176] (map rInterest (regular a))
+  check "Annuität: Tilgung" [470000, 471410, 472824] (map rPrincipal (regular a))
+  check "Annuität: Fälligkeiten" [d 2026 2 28, d 2026 3 30, d 2026 4 30] (map rDue (regular a))
+  check "Annuität: Restschuld" 8585766 (rBalance (last a))
+
+  -- Sondertilgung 10.000,00 am 15.03.: Zins bis dahin auf die alte, danach auf die neue Restschuld
+  let s = plan' [terms] [LoanPayment "DA-1" (d 2026 3 15) 1000000] openEnd (d 2026 3 31)
+  check "Sondertilgung: Zeile" [(Special, 1000000, 8530000)] [(rKind r, rPrincipal r, rBalance r) | r <- s, rKind r == Special]
+  -- 9.530.000 × 0,3 % × 15/30 + 8.530.000 × 0,3 % × 15/30 = 14.295 + 12.795
+  check "Sondertilgung: Zins März" [27090] [rInterest r | r <- regular s, rDue r == d 2026 3 30]
+
+  -- Zinswechsel ab 01.04. auf 4,8 % (act/360): Periode 31.03.–30.04. – der 31.03. zum alten, 30 Tage zum neuen Satz
+  let act = terms {lnDayCount = ACT360}
+      changed = plan' [act, act {lnFrom = d 2026 4 1, lnRate = 48 / 10}] [] openEnd (d 2026 4 30)
+      march = rBalance (regular changed !! 1)
+  check "Zinswechsel: April anteilig" (roundTo (fromInteger march * (36 / 1000 * 1 / 360 + 48 / 1000 * 30 / 360)))
+    (rInterest (last (regular changed)))
+  check "Zinswechsel: März unverändert" (map rInterest (take 2 (regular (plan' [act] [] openEnd (d 2026 3 30)))))
+    (map rInterest (take 2 (regular changed)))
+
+  -- Ratentilgung: Tilgung fest, Zins dazu
+  let inst = plan' [terms {lnRepayment = Instalment, lnInstallment = 100000}] [] openEnd (d 2026 3 30)
+  check "Ratentilgung" [(30000, 100000), (29700, 100000)] [(rInterest r, rPrincipal r) | r <- regular inst]
+
+  -- Endfällig mit Vertragsende: nur Zinsen, am Ende die Restschuld
+  let bullet = plan' [terms {lnRepayment = Bullet, lnInstallment = 0}] [] (d 2026 4 30) (d 2030 1 1)
+  check "endfällig" [(30000, 0), (30000, 0), (30000, 10000000)] [(rInterest r, rPrincipal r) | r <- regular bullet]
+  check "endfällig: getilgt" 0 (rBalance (last bullet))
+
+  -- Übernahme: keine Auszahlung
+  check "Übernahme ohne Auszahlung" [] [r | r <- plan' [terms {lnTakeover = True}] [] openEnd (d 2026 3 1), rKind r == Disbursement]
+
+  -- Einbindung: Darlehensvertrag (wir zahlen) – Auszahlung, Zins, Tilgung gegen die Bank
+  let bank = Contract "1000" "DA-1" "DA" "ACTIVE" "BANK" "EUR" "" (d 2026 1 1) openEnd
+      input =
+        Input
+          { inTypes = Map.fromList [("DA", ContractType "DA" "PAYABLE" "CREDITOR" (Just "KR") Nothing True)]
+          , inContracts = [bank], inConditions = [], inObjects = [], inMeasurements = [], inAccounts = Map.empty, inFieldStatus = Map.empty
+          , inLoans = [terms], inLoanPayments = []
+          , inPartnerAccounts = Map.fromList [(("BANK", "CREDITOR"), PartnerAccount "BANK" "CREDITOR" (Just "1600") False)]
+          , inPosted = [], inCorrectionDate = d 2026 3 10
+          }
+      (docs, msgs) = plan (d 2026 2 28) input
+  check "Darlehen: keine Meldungen" [] msgs
+  check "Darlehen: Auszahlung Bank an Darlehen" (sort [("1600", "S", 10000000), ("3150", "H", 10000000)])
+    (sort [(lAccount l, lSide l, lAmount l) | x <- docs, dDate x == d 2026 1 30, l <- dLines x])
+  check "Darlehen: Rate Zins und Tilgung an Bank" (sort [("7310", "S", 30000), ("1600", "H", 30000), ("3150", "S", 470000), ("1600", "H", 470000)])
+    (sort [(lAccount l, lSide l, lAmount l) | x <- docs, dDate x == d 2026 2 28, l <- dLines x])
+  where
+    roundTo :: Rational -> Integer
+    roundTo x = roundDiv (numerator x) (denominator x)

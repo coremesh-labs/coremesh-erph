@@ -3,6 +3,7 @@
 -- | Object.Action | Payload | Ergebnis |
 -- |---|---|---|
 -- | ContractBilling.run | company_code, to_date, contract_id?, simulate?, run_id? | Belege, Meldungen (simulate: geplante Belege) |
+-- | ContractBilling.loanSchedule | company_code, contract_id | Tilgungsplan (message, table) |
 -- | ContractBilling.refresh | – | Cache des Mandanten verwerfen |
 -- | ContractBilling.cache | – | Zustand des Caches (Diagnose) |
 -- | ContractBillingCache.onEvent | SystemEvent | betroffenen Ausschnitt verwerfen |
@@ -33,10 +34,10 @@ callbackObject = "ContractBillingCache"
 
 billingPlugin :: Cache -> Plugin
 billingPlugin cache =
-  (defaultPlugin "contract-billing" "0.4.0")
+  (defaultPlugin "contract-billing" "0.5.0")
     { pluginDescription = "Vertragsbuchung: Sollstellung der Verträge über die Vorerfassung des Hauptbuchs"
     , pluginCapabilities =
-        [ Capability "ContractBilling" ["run", "refresh", "cache"] [] "Sollstellung der Verträge rechnen und buchen"
+        [ Capability "ContractBilling" ["run", "loanSchedule", "refresh", "cache"] [] "Sollstellung der Verträge rechnen und buchen, Tilgungspläne"
         , Capability callbackObject ["onEvent"] [] "Änderungen an Stammdaten (SystemEvent)"
         ]
     , pluginConfigure = \call settings -> do
@@ -78,6 +79,10 @@ handler cache call req = case (reqObject req, reqAction req) of
           , rrSimulate = bool "simulate" p
           , rrRunId = textMaybe "run_id" p
           }
+  ("ContractBilling", "loanSchedule") -> do
+    cc <- required "company_code" "Buchungskreis"
+    cid <- required "contract_id" "Vertrag"
+    response <$> loanPlan cache call cc cid
   ("ContractBilling", "refresh") -> do
     clearTenant cache (callTenantId call)
     pure (response (object ["message" .= ("Kopie der Stammdaten verworfen; der nächste Lauf lädt neu" :: Text)]))

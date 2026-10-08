@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.4.0 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.5.0 |
 
 ## Bauen, testen, starten
 
@@ -125,6 +125,19 @@ vor jedem Lauf die offenen Vorerfassungen ab (Events gehen höchstens einmal zu)
 | Zeitraum | Kondition ∩ Vertragslaufzeit; Verträge im Status aktiv oder gekündigt |
 | Überschneidung | Zeitscheiben einer Kondition überschneiden sich: Meldung, der Vertrag wird nicht gebucht |
 
+### Kaution und Darlehen
+
+- **Raten:** Einmalige Konditionen mit Monatsraten (z. B. Kaution 3 Raten) – je Rate eine
+  Fälligkeit, einen Monat nach der vorigen; der Rest der Division geht auf die erste Rate.
+- **Darlehen** (`Billing.Loan`, rein): Zinsperioden enden an den Fälligkeiten; Zins je Periode
+  stückweise über Zinssatzwechsel (Zeitscheiben) und Sondertilgungen nach Zinsmethode
+  (30/360 deutsch mit Monatsende = 30., act/360, act/365), kaufmännisch gerundet. Tilgung:
+  Annuität = Rate − Zins, Ratentilgung = Rate, endfällig = 0; am Vertragsende die Restschuld.
+- Daraus entstehen Fälligkeiten wie bei Konditionen – Auszahlung (Bank an Darlehen), Zins
+  (Zinsaufwand bzw. -ertrag) und Tilgung (Darlehenskonto) gegen das Partnerkonto der Bank;
+  Nachberechnung bei geänderten Konditionen inklusive.
+- `ContractBilling.loanSchedule` liefert den Tilgungsplan als Tabelle (Aktion „Tilgungsplan“).
+
 ### Nachberechnung
 
 Jeder Lauf rechnet auch die schon vermerkten Perioden neu und vergleicht je Vertrag,
@@ -176,7 +189,8 @@ gebucht):
 
 | Modul | Inhalt |
 |---|---|
-| `Billing.Schedule` | Perioden, anteilige Beträge, Fälligkeitstage, Einmalzahlungen (rein) |
+| `Billing.Schedule` | Perioden, anteilige Beträge, Fälligkeitstage, Einmalzahlungen und Raten (rein) |
+| `Billing.Loan` | Tilgungsplan: Zinsmethoden, Annuität, Ratentilgung, endfällig, Sondertilgung, Zinswechsel (rein) |
 | `Billing.Plan` | Belege aus Verträgen, Konditionen, Objekten, Konten, Feldstatus und dem Vermerkten; Nachberechnung (rein) |
 | `Billing.Cache` | Kopie der Stammdaten, Ungültig per Event, Haltezeit |
 | `Billing.Data` | Datensätze aus den Datenströmen der anderen Plugins |

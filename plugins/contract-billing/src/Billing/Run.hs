@@ -18,6 +18,7 @@
 module Billing.Run
   ( RunRequest (..)
   , runBilling
+  , loanPlan
   , currencyDecimals
   ) where
 
@@ -31,12 +32,13 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time.Calendar (Day)
+import Data.Time.Calendar (Day, fromGregorian)
 import Data.Time.Format.ISO8601 (iso8601Show)
 import Data.Time.LocalTime (getZonedTime, localDay, zonedTimeToLocalTime)
 
 import Billing.Cache
 import Billing.Data
+import Billing.Loan
 import Billing.Plan
 import Billing.Schedule (Due (..))
 import CoreMesh.Plugin
@@ -88,6 +90,11 @@ runBilling cache call RunRequest {..} = do
     if any kPerUnit conditions
       then concatMap (maybe [] pure . measurement) <$> get Measurements
       else pure []
+  loanRecs <- get Loans
+  let parsedLoans = [(text "contract_id" r, loanTerms r) | r <- loanRecs]
+      loans = mine lnContract [l | (_, Right l) <- parsedLoans]
+      badLoans = [(c, "Darlehenskondition nicht lesbar: " <> e) | (c, Left e) <- parsedLoans, c `Set.member` ids]
+  payments <- mine lpContract . concatMap (maybe [] pure . loanPayment) <$> get LoanPayments
   accounts <- map account <$> get Accounts
   status <- fieldStatus <$> get FieldStatuses
   postings <- postedOf sys rrCompany
@@ -103,12 +110,14 @@ runBilling cache call RunRequest {..} = do
           , inMeasurements = measurements
           , inAccounts = Map.fromList [(aNumber a, a) | a <- accounts]
           , inFieldStatus = status
+          , inLoans = loans
+          , inLoanPayments = payments
           , inPartnerAccounts = Map.fromList [((paPartner a, paRole a), a) | a <- partnerAccounts]
           , inPosted = postings
           , inCorrectionDate = min today rrTo
           }
       (docs, planMsgs) = plan rrTo input
-      msgs0 = badConditions <> planMsgs
+      msgs0 = badConditions <> badLoans <> planMsgs
       autoPost d = maybe False ctAutoPost (Map.lookup (cType (dContract d)) (inTypes input))
       corrections ds = sum (map docCorrections ds)
   decimals <- Map.fromList <$> forM (nub (map (cCurrency . dContract) docs)) (\c -> (c,) <$> currencyDecimals call c)
@@ -298,3 +307,49 @@ problems n = "; " <> tshow n <> " Meldungen"
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
+
+-- | Tilgungsplan eines Darlehensvertrags (Aktion „Tilgungsplan“): alle Zeilen
+-- bis zur Rückzahlung bzw. zum Vertragsende, als Tabelle.
+loanPlan :: Cache -> Call -> Text -> Text -> IO Value
+loanPlan cache call cc contractId = do
+  sys <- systemCall call (callTenantId call)
+  let get = slice cache sys cc
+  terms <- concatMap (either (const []) pure . loanTerms) <$> get Loans
+  payments <- concatMap (maybe [] pure . loanPayment) <$> get LoanPayments
+  contracts <- concatMap (maybe [] pure . contract) <$> get Contracts
+  let mineL = [l | l <- terms, lnContract l == contractId]
+      c = [x | x <- contracts, cId x == contractId]
+  case (mineL, c) of
+    ([], _) -> pluginError NotFound ("Vertrag " <> contractId <> " hat keine Darlehenskonditionen")
+    (_, []) -> pluginError NotFound ("Vertrag " <> contractId <> " gibt es im Buchungskreis " <> cc <> " nicht")
+    (_, k : _) -> do
+      dec <- currencyDecimals call (cCurrency k)
+      let rows = schedule mineL [p | p <- payments, lpContract p == contractId] (cTo k) (fromGregorian 2199 12 31)
+          amt = formatAmount dec
+          kind r = case rKind r of
+            Disbursement -> "Auszahlung" :: Text
+            Regular -> "Rate"
+            Special -> "Sondertilgung"
+          regular = [r | r <- rows, rKind r == Regular]
+          totalInterest = sum (map rInterest rows)
+          lastDue = case reverse regular of
+            r : _ -> formatDay (rDue r)
+            [] -> "–"
+      pure $
+        object
+          [ "message"
+              .= ( "Tilgungsplan " <> contractId <> ": " <> tshow (length regular) <> " Raten bis " <> lastDue <> ", Zinsen gesamt "
+                    <> amt totalInterest <> " " <> cCurrency k
+                 )
+          , "table"
+              .= object
+                [ "columns" .= (["Fällig", "Art", "Zinsperiode", "Zins", "Tilgung", "Rate", "Restschuld"] :: [Text])
+                , "rows"
+                    .= [ [ formatDay (rDue r), kind r
+                         , if rKind r == Regular then formatDay (rFrom r) <> "–" <> formatDay (rTo r) else ""
+                         , amt (rInterest r), amt (rPrincipal r), amt (rInterest r + if rKind r == Disbursement then 0 else rPrincipal r), amt (rBalance r)
+                         ]
+                       | r <- rows
+                       ]
+                ]
+          ]

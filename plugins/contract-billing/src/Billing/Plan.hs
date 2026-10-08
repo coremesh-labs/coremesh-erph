@@ -55,6 +55,7 @@ import Data.Text qualified as T
 import Data.Time.Calendar
 
 import Billing.Data
+import Billing.Loan
 import Billing.Schedule
 
 -- | Abgleich: Vertrag, Konditionsart, Objekt, Beginn der Kalenderperiode.
@@ -68,6 +69,8 @@ data Input = Input
   , inMeasurements :: [Measurement]
   , inAccounts :: Map Text Account
   , inFieldStatus :: FieldStatus
+  , inLoans :: [LoanTerms] -- ^ Darlehenskonditionen (Zeitscheiben)
+  , inLoanPayments :: [LoanPayment] -- ^ Sondertilgungen
   , inPartnerAccounts :: Map (Text, Text) PartnerAccount -- ^ (Partner, Rolle) → Buchungskreisdaten im Buchungskreis
   , inPosted :: [Posted] -- ^ schon vermerkte Sollstellungen (vorerfasst oder gebucht)
   , inCorrectionDate :: Day -- ^ Buchungsdatum der Nachberechnungen (Tag des Laufs)
@@ -120,6 +123,8 @@ plan until Input {..} = (concat docs, concat msgs)
     conditionsOf = Map.fromListWith (flip (<>)) [(kContract k, [k]) | k <- inConditions]
     objectsOf = Map.fromListWith (flip (<>)) [(oContract o, [o]) | o <- inObjects]
     postedOf = Map.fromListWith (flip (<>)) [(pContract p, [p]) | p <- inPosted]
+    loansOf = Map.fromListWith (flip (<>)) [(lnContract l, [l]) | l <- inLoans]
+    paymentsOf = Map.fromListWith (flip (<>)) [(lpContract p, [p]) | p <- inLoanPayments]
 
     forContract c = case Map.lookup (cType c) inTypes of
       Nothing -> ([], [(cId c, "Vertragsart " <> cType c <> " fehlt")])
@@ -144,7 +149,7 @@ plan until Input {..} = (concat docs, concat msgs)
               -- geändertem Fälligkeitstag) erst nach dem Stichtag fällig wären.
               horizon = maximum (until : [addDays 400 (pTo p) | p <- postings])
               results = [(k, entriesFor c k horizon) | k <- conds]
-              candidates = concat [es | (_, Right es) <- results]
+              candidates = concat [es | (_, Right es) <- results] <> loanEntries c horizon
               failed = Set.fromList [(kType k, kObject k) | (k, Left _) <- results]
               -- Gleiche Fälligkeit zweimal = Zeitscheiben einer Kondition überschneiden sich (Datenfehler).
               clashes = Map.keys (Map.filter (> (1 :: Int)) (Map.fromListWith (+) [(entryKey e, 1) | e <- candidates]))
@@ -210,11 +215,43 @@ plan until Input {..} = (concat docs, concat msgs)
             , eKind = Correction
             }
 
+    -- Darlehen: Zeilen des Tilgungsplans als Fälligkeiten – Zins aufs Zinskonto,
+    -- Tilgung und Sondertilgung aufs Darlehenskonto, Auszahlung (negativ:
+    -- Seiten getauscht) aufs Darlehenskonto; Konten und Konditionsarten aus der
+    -- Zeitscheibe am Fälligkeitstag.
+    loanEntries c horizon = case sortOn lnFrom (Map.findWithDefault [] (cId c) loansOf) of
+      [] -> []
+      sorted@(first : _) ->
+        let termsAt d = last (first : [s | s <- sorted, lnFrom s <= d])
+            rows = schedule sorted (Map.findWithDefault [] (cId c) paymentsOf) (cTo c) horizon
+            mk typ acc freq row amt =
+              let k = loanCondition c typ acc freq row
+                  due = Due (rFrom row) (rTo row) (rFrom row) (rTo row) (rDue row) amt
+               in Entry k due (rentObject c k (rDue row)) acc Original
+         in concat
+              [ case rKind row of
+                  Disbursement -> [mk (lnDisbursementType t) (lnLoanAccount t) Once row (negate (rPrincipal row))]
+                  Special -> [mk (lnSpecialType t) (lnLoanAccount t) Once row (rPrincipal row)]
+                  Regular ->
+                    [ mk (lnInterestType t) (lnInterestAccount t) Monthly row (rInterest row)
+                    , mk (lnPrincipalType t) (lnLoanAccount t) Monthly row (rPrincipal row)
+                    ]
+              | row <- rows
+              , let t = termsAt (rDue row)
+              ]
+
+    loanCondition c typ acc freq row =
+      Condition
+        { kContract = cId c, kType = typ, kObject = "", kPerUnit = False, kAmount = 0, kMeasurement = Nothing
+        , kFrequency = freq, kDueDay = 1, kDueDate = Nothing, kInstallments = 1, kMode = InAdvance, kAccount = Just acc
+        , kPayer = Nothing, kFrom = rFrom row, kTo = rTo row
+        }
+
     -- Kondition, die es für die Periode nicht mehr gibt.
     orphan c t o ps pe =
       Condition
         { kContract = cId c, kType = t, kObject = o, kPerUnit = False, kAmount = 0, kMeasurement = Nothing
-        , kFrequency = Monthly, kDueDay = 1, kDueDate = Nothing, kMode = InAdvance, kAccount = Nothing, kPayer = Nothing
+        , kFrequency = Monthly, kDueDay = 1, kDueDate = Nothing, kInstallments = 1, kMode = InAdvance, kAccount = Nothing, kPayer = Nothing
         , kFrom = ps, kTo = pe
         }
 
@@ -238,7 +275,7 @@ plan until Input {..} = (concat docs, concat msgs)
             | kPerUnit k = maybe 0 (\v -> roundScientific (fromInteger (kAmount k) * v)) (valueAt d)
             | otherwise = kAmount k
           ds = case kFrequency k of
-            Once -> dueOnce (kDueDate k) amountAt from to horizon
+            Once -> dueOnce (kInstallments k) (kDueDate k) amountAt from to horizon
             f -> dues f (kMode k) (kDueDay k) amountAt from to horizon
           missing = [dueFrom x | kPerUnit k, x <- ds, dueDate x <= until, isNothing (valueAt (dueFrom x))]
       case missing of

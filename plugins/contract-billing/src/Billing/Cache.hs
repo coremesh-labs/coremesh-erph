@@ -35,7 +35,7 @@ import Billing.Data (Record, records)
 import CoreMesh.Plugin
 
 -- | Ausschnitte der Stammdaten.
-data Slice = Types | Contracts | Conditions | Objects | Measurements | Accounts | FieldStatuses
+data Slice = Types | Contracts | Conditions | Objects | Measurements | Accounts | FieldStatuses | Loans | LoanPayments
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 -- | Quelle: Object, Filterfeld des Buchungskreises (Nothing = gilt für alle), mit Historie.
@@ -48,6 +48,8 @@ source = \case
   Measurements -> ("Measurement", Just "company_code", True)
   Accounts -> ("GLAccountCompany", Just "company_code_id", False)
   FieldStatuses -> ("FieldStatus", Nothing, False)
+  Loans -> ("ContractLoan", Just "company_code", True)
+  LoanPayments -> ("ContractLoanPayment", Just "company_code", False)
 
 -- | Objects, deren Events den Cache betreffen (für SystemEvent.Register).
 watched :: [Text]

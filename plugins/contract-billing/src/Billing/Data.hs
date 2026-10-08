@@ -23,6 +23,8 @@ module Billing.Data
   , account
   , posted
   , partnerAccount
+  , loanTerms
+  , loanPayment
   , fieldStatus
   , text
   , textMaybe
@@ -44,6 +46,7 @@ import Data.Text qualified as T
 import Data.Time.Calendar (Day, fromGregorian)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 
+import Billing.Loan
 import Billing.Schedule (Frequency (..), PaymentMode (..))
 
 -- | Eine Zeile als Spalte → Wert.
@@ -128,6 +131,7 @@ data Condition = Condition
   , kFrequency :: Frequency
   , kDueDay :: Int
   , kDueDate :: Maybe Day -- ^ nur einmalig: Fälligkeit (leer = Beginn)
+  , kInstallments :: Int -- ^ nur einmalig: Monatsraten (Standard 1)
   , kMode :: PaymentMode
   , kAccount :: Maybe Text
   , kPayer :: Maybe Text
@@ -272,6 +276,7 @@ condition r = do
       , kFrequency = freq
       , kDueDay = maybe 1 fromInteger (int "due_day" r)
       , kDueDate = day "due_date" r
+      , kInstallments = maybe 1 fromInteger (int "installments" r)
       , kMode = mode
       , kAccount = textMaybe "account_number" r
       , kPayer = textMaybe "payer_id" r
@@ -301,3 +306,51 @@ shortAccount a = case T.breakOnEnd "-" a of
 
 fieldStatus :: [Record] -> FieldStatus
 fieldStatus rs = Map.fromList [((text "group_id" r, text "field_name" r), text "status" r) | r <- rs]
+
+-- | Darlehenskonditionen (ContractLoan, eine Zeitscheibe).
+loanTerms :: Record -> Either Text LoanTerms
+loanTerms r = do
+  from <- maybe (Left "Gültig ab fehlt") Right (day "valid_from" r)
+  start <- maybe (Left "Auszahlung fehlt") Right (day "disbursement_date" r)
+  principal <- maybe (Left "Darlehensbetrag fehlt") Right (int "principal" r)
+  rate <- maybe (Left ("Zinssatz " <> text "interest_rate" r)) Right (parseRate (text "interest_rate" r))
+  repayment <- case text "repayment_type" r of
+    "ANNUITY" -> Right Annuity
+    "INSTALLMENT" -> Right Instalment
+    "BULLET" -> Right Bullet
+    t -> Left ("unbekannte Tilgungsart " <> t)
+  freq <- case text "frequency" r of
+    "MONTHLY" -> Right Monthly
+    "QUARTERLY" -> Right Quarterly
+    "HALF_YEARLY" -> Right HalfYearly
+    "YEARLY" -> Right Yearly
+    f -> Left ("unbekannter Rhythmus " <> f)
+  dc <- case text "day_count" r of
+    "30/360" -> Right D30360
+    "ACT/360" -> Right ACT360
+    "ACT/365" -> Right ACT365
+    d -> Left ("unbekannte Zinsmethode " <> d)
+  pure
+    LoanTerms
+      { lnContract = text "contract_id" r
+      , lnFrom = from
+      , lnTo = until' "valid_to" r
+      , lnPrincipal = principal
+      , lnStart = start
+      , lnTakeover = bool "takeover" r
+      , lnRepayment = repayment
+      , lnRate = rate
+      , lnInstallment = maybe 0 id (int "installment" r)
+      , lnFrequency = freq
+      , lnDueDay = maybe 30 fromInteger (int "due_day" r)
+      , lnDayCount = dc
+      , lnLoanAccount = text "loan_account" r
+      , lnInterestAccount = text "interest_account" r
+      , lnInterestType = text "interest_type" r
+      , lnPrincipalType = text "principal_type" r
+      , lnSpecialType = text "special_type" r
+      , lnDisbursementType = text "disbursement_type" r
+      }
+
+loanPayment :: Record -> Maybe LoanPayment
+loanPayment r = LoanPayment (text "contract_id" r) <$> day "payment_date" r <*> int "amount" r

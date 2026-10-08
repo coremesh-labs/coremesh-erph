@@ -103,10 +103,19 @@ dues f mode dueDay amountAt from to horizon = go (fst (periodOf f from))
              in dayInMonth y m dueDay
 
 -- | Einmalige Kondition: ein Betrag für den Beginn, fällig am eigenen
--- Fälligkeitsdatum (nicht vor dem Beginn) bzw. am Beginn.
-dueOnce :: Maybe Day -> (Day -> Integer) -> Day -> Day -> Day -> [Due]
-dueOnce dueOn amountAt from to horizon
-  | from <= to && date <= horizon = [Due from from from from date (amountAt from)]
-  | otherwise = []
+-- Fälligkeitsdatum (nicht vor dem Beginn) bzw. am Beginn – in n Monatsraten
+-- (z. B. Kaution in drei Raten): jede Rate eine eigene Fälligkeit, ein Monat
+-- nach der vorigen; der Rest der Division geht auf die erste Rate. Die erste
+-- Rate deckt den Beginn ab (wie eine einmalige Kondition ohne Raten), jede
+-- weitere ihren Fälligkeitstag – so bleibt jede Rate eindeutig vermerkt.
+dueOnce :: Int -> Maybe Day -> (Day -> Integer) -> Day -> Day -> Day -> [Due]
+dueOnce n dueOn amountAt from to horizon
+  | from > to = []
+  | otherwise = [Due p p p p d a | (i, d, a) <- zip3 [0 :: Int ..] dates amounts, let p = if i == 0 then from else d, d <= horizon]
   where
+    k = max 1 n
     date = maybe from (max from) dueOn
+    dates = [addGregorianMonthsClip (toInteger i) date | i <- [0 .. k - 1]]
+    total = amountAt from
+    rate = total `quot` toInteger k
+    amounts = (total - rate * toInteger (k - 1)) : replicate (k - 1) rate

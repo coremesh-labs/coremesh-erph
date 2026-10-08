@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name:          contract-billing
-version:       0.4.0
+version:       0.5.0
 synopsis:      Vertragsbuchung: Sollstellung der Verträge im Hauptbuch
 description:
   CoreMesh-Plugin in Haskell. Bucht die fälligen Konditionen der Verträge
@@ -24,6 +24,7 @@ library
     Billing.Api
     Billing.Cache
     Billing.Data
+    Billing.Loan
     Billing.Plan
     Billing.Run
     Billing.Schedule
