@@ -78,9 +78,9 @@ planTests check = do
   let d = fromGregorian
       types =
         Map.fromList
-          [ ("MV", ContractType "MV" "RECEIVABLE" (Just "1200") Nothing)
-          , ("VS", ContractType "VS" "PAYABLE" (Just "2900") (Just "KR"))
-          , ("XX", ContractType "XX" "RECEIVABLE" Nothing Nothing)
+          [ ("MV", ContractType "MV" "RECEIVABLE" (Just "1200") Nothing False)
+          , ("VS", ContractType "VS" "PAYABLE" (Just "2900") (Just "KR") True)
+          , ("XX", ContractType "XX" "RECEIVABLE" Nothing Nothing False)
           ]
       contract' cid typ = Contract "1000" cid typ "ACTIVE" "P1" "EUR" "" (d 2026 1 1) openEnd
       cond cid typ acc amount =
@@ -129,6 +129,11 @@ planTests check = do
       check "Kreditor: Lieferant und Objekt erlaubt, Vertrag ausgeblendet" [("supplier_id", "P1")] (sortFields (dLines x !! 1))
       check "Belegart der Vertragsart" "KR" (dDocumentType x)
     other -> check "ein Versicherungsbeleg im Januar" 1 (length other)
+  -- Überschneidende Zeitscheiben derselben Kondition: Meldung, kein Beleg
+  let twice = input {inConditions = [cond "MV-1" "KM" "6000" 80000, (cond "MV-1" "KM" "6000" 85000) {kFrom = d 2026 2 1}], inPosted = mempty}
+      (docs2, msgs2) = plan (d 2026 2 28) twice
+  check "Überschneidung: kein Beleg für den Vertrag" 0 (length [x | x <- docs2, cId (dContract x) == "MV-1"])
+  check "Überschneidung: Meldung" [("MV-1", "Kondition KM: Zeitscheiben überschneiden sich (01.02.2026) – Vertrag nicht gebucht")] [m | m@("MV-1", _) <- msgs2]
   where
     sortFields = Map.toList . Map.fromList . lFields
     head' = \case

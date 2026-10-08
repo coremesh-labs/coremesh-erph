@@ -2,7 +2,8 @@
 module Main (main) where
 
 import Billing.Api (billingPlugin)
+import Billing.Cache (newCache)
 import CoreMesh.Plugin (serve)
 
 main :: IO ()
-main = serve billingPlugin
+main = newCache >>= serve . billingPlugin

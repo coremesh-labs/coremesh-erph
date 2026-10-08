@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling` | Vertragsbuchung: Sollstellung der Verträge über die Vorerfassung des Hauptbuchs | 0.1.0 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.2.0 |
 
 ## Bauen, testen, starten
 
@@ -57,22 +57,55 @@ Eintrag in `configs/`. `build.sh` findet es über die `.cabal`-Datei.
 
 ## Vertragsbuchung (`contract-billing`)
 
-Bucht die fälligen Konditionen der Verträge (Plugin `contract`) im Hauptbuch (Plugin `ledger`),
-und zwar wie eine manuelle Buchung über die **Vorerfassung**: Buchungskopf anlegen, Positionen
-füllen, buchen. Je Vertrag und Fälligkeitstag entsteht ein Beleg.
+Rechnet die fälligen Konditionen der Verträge (Plugin `contract`) und bucht sie im Hauptbuch
+(Plugin `ledger`) – wie eine manuelle Buchung über die **Vorerfassung**. Je Vertrag und
+Fälligkeitstag entsteht ein Beleg.
 
-**Oberfläche** im Modul Verträge (die Objects gehören dem Plugin `contract` und leiten hierher
-weiter):
+**Aufgabenteilung:** Haskell rechnet und bucht, Go hält die Daten und stellt die Oberfläche.
+Das Plugin hat **keine eigenen Tabellen und kein SQL**; es spricht nur über Objects und Actions
+mit dem System:
 
-- **Buchung → Buchungsläufe:** „Neu“ bucht für einen Buchungskreis alle Fälligkeiten bis zum
-  Stichtag, die noch nicht gebucht sind – also seit der letzten Ausführung. „Vorschau …“
-  plant nur. Jeder Lauf zeigt Belege, Fälligkeiten und Meldungen je Vertrag.
-- **Buchung → Sollstellungen:** die gebuchten Fälligkeiten mit Beleg; auch als Abschnitt am
-  Vertrag und am Buchungslauf.
-- **„Buchen …“ am Vertrag:** dasselbe für einen Vertrag, bis zu einem wählbaren Datum.
+| Wer | Was |
+|---|---|
+| Vertragsmodul (Go) | Läufe (`ContractPostingRun`), Sollstellungen (`ContractPosting`), Oberfläche, Einstellungen an der Vertragsart, Abgleich mit dem Hauptbuch |
+| contract-billing (Haskell) | Fälligkeiten und Belege rechnen, Vorerfassung anlegen, prüfen, ggf. buchen; Kopie der Stammdaten im Speicher |
 
-Konsole: `console --object ContractBilling --action run --param company_code='"1000"' --param to_date=2026-10-31`
-(`--param simulate=true` für die Vorschau).
+**Oberfläche** (Modul Verträge → Buchung): „Buchungslauf …“ bucht im Buchungskreis alles, was
+bis zum Stichtag fällig und noch nicht vermerkt ist; „Vorschau …“ plant nur; „Buchen …“ am
+Vertrag für einen Vertrag. Konsole:
+`console --object ContractBilling --action run --param company_code='"1000"' --param to_date=2026-10-31 --param simulate=true`.
+
+### Ablauf je Beleg
+
+In **einer** Transaktion (das Plugin öffnet sie über die Host-API, `inTx`; Ledger und
+Vertragsmodul nehmen an ihr teil):
+
+1. `JournalDraft.create`, je Position `JournalDraftItem.create`,
+2. `JournalDraft.simulate` – nicht buchbar (gesperrte Periode, fehlende Kontierung …): nichts
+   wird angelegt, der Lauf meldet den Grund,
+3. **„Automatisch ins Hauptbuch buchen“** an der Vertragsart (Standard aus): `JournalDraft.post`;
+   sonst bleibt die geprüfte Vorerfassung offen und wird im Hauptbuch gebucht,
+4. `ContractPostingService.record`: Fälligkeiten vermerken (vorerfasst bzw. gebucht).
+
+Wird eine offene Vorerfassung später im Hauptbuch **gebucht**, übernimmt die Sollstellung die
+Belegnummer; wird sie **verworfen**, ist die Fälligkeit wieder offen und kommt im nächsten Lauf.
+Das Vertragsmodul hört dafür auf die SystemEvents `JournalDraft.post`/`deactivate` und gleicht
+vor jedem Lauf die offenen Vorerfassungen ab (Events gehen höchstens einmal zu).
+
+### Kopie der Stammdaten
+
+- Beim ersten Gebrauch je Mandant und Buchungskreis liest das Plugin per Datenstrom:
+  Vertragsarten, Verträge, Konditionen, Vertragsobjekte, Bemessungen, Sachkonten im
+  Buchungskreis, Feldstatus. Geladen wird als **Systemanfrage** (`ingress: true`), unabhängig
+  vom buchenden Benutzer.
+- **Events** (`SystemEvent.Register` auf diese Objects, Callback `ContractBillingCache.onEvent`)
+  machen den betroffenen Ausschnitt ungültig; er wird beim nächsten Gebrauch neu geladen.
+- **Sicherheitsnetz:** spätestens nach `cache_ttl` (Standard 1 h) neu laden;
+  `ContractBilling.refresh` verwirft die Kopie sofort, `ContractBilling.cache` zeigt den Zustand.
+- Die vermerkten Fälligkeiten (`ContractPosting`) liest jeder Lauf **frisch** – hier darf nichts
+  veralten, sonst würde doppelt gebucht.
+- **Rechte:** Gebucht werden nur Verträge, die der Benutzer lesen darf (`Account.Check`,
+  `Contract.read` je Buchungskreis und Vertragsart); die Buchung selbst prüft der Ledger.
 
 ### Fälligkeiten
 
@@ -85,6 +118,7 @@ Konsole: `console --object ContractBilling --action run --param company_code='"1
 | Fälligkeitstag | über dem Monatsende: letzter Tag des Monats |
 | je Einheit | Preis × Bemessung des Objekts am Beginn des abgedeckten Teils (realestate `Measurement`) |
 | Zeitraum | Kondition ∩ Vertragslaufzeit; Verträge im Status aktiv oder gekündigt |
+| Überschneidung | Zeitscheiben einer Kondition überschneiden sich: Meldung, der Vertrag wird nicht gebucht |
 
 ### Belege
 
@@ -93,31 +127,14 @@ Konsole: `console --object ContractBilling --action run --param company_code='"1
 | Forderung (Vertragsart Richtung „wir erhalten“) | Abstimmkonto der Vertragsart (Debitor) | Sachkonto der Kondition (Kontenfindung) |
 | Verbindlichkeit („wir zahlen“) | Sachkonto der Kondition | Abstimmkonto (Kreditor) |
 
-- **Einstellungen** an der Vertragsart (Verträge → Vertragsarten, Gruppe „Buchung“):
-  Abstimmkonto der Sollstellung (Pflicht für die Buchung) und Belegart (leer = DR bzw. KR).
+- **Einstellungen** an der Vertragsart (Gruppe „Buchung“): Abstimmkonto (Pflicht), Belegart
+  (leer = DR bzw. KR), automatisch buchen.
 - **Negative Beträge** (Minderungen) tauschen Soll und Haben.
-- **Kontierungen:** Vertrag (`rent_contract_id`), Mietobjekt (`rent_object_id`: Objekt der
-  Kondition, sonst Hauptobjekt des Vertrags – nur Mietobjekte), Debitor bzw. Kreditor
-  (`sd_customer_id`/`supplier_id`: abweichender Zahler, sonst Vertragspartner). Gesetzt wird nur,
-  was die **Feldstatusgruppe** des Kontos zulässt; Pflichtfelder prüft der Ledger.
+- **Kontierungen:** Vertrag, Mietobjekt (Objekt der Kondition, sonst Hauptobjekt – nur
+  Mietobjekte), Debitor bzw. Kreditor (abweichender Zahler, sonst Vertragspartner) – nur, was
+  die **Feldstatusgruppe** des Kontos zulässt; Pflichtfelder prüft der Ledger.
 - **Kopf:** Buchungs- und Belegdatum = Fälligkeit, Text „Sollstellung <Vertrag> <Datum>“,
   Referenz `<Vertrag>/<JJJJMMTT>`.
-
-### Transaktion und „seit der letzten Ausführung“
-
-Jeder Beleg läuft in **einer** Transaktion: Vorerfassung, Positionen, Buchen und der Vermerk in
-`contract_billing__posting` (der Ledger nimmt an der Transaktion des Plugins teil). Scheitert
-ein Schritt – etwa eine gesperrte Periode –, ist für diesen Beleg nichts gebucht und keine
-Vorerfassung bleibt liegen; der Lauf meldet es und bucht die übrigen. Gebucht wird beim nächsten
-Lauf alles, was bis zum Stichtag fällig und dort noch nicht vermerkt ist. Ein zweiter Lauf mit
-demselben Stichtag bucht nichts.
-
-### Tabellen
-
-| Tabelle | Inhalt |
-|---|---|
-| `contract_billing__run` | Buchungslauf: Buchungskreis, Stichtag, Status (DONE, PARTIAL, FAILED, EMPTY), Anzahl, Meldungen |
-| `contract_billing__posting` | gebuchte Fälligkeit: Vertrag, Konditionsart, Objekt, Zeitraum, Fälligkeit, Betrag (Cent), Konto, Vorerfassung, Beleg, Lauf |
 
 ### Aufbau
 
@@ -125,14 +142,17 @@ demselben Stichtag bucht nichts.
 |---|---|
 | `Billing.Schedule` | Perioden, anteilige Beträge, Fälligkeitstage (rein) |
 | `Billing.Plan` | Belege aus Verträgen, Konditionen, Objekten, Konten und Feldstatus (rein) |
+| `Billing.Cache` | Kopie der Stammdaten, Ungültig per Event, Haltezeit |
 | `Billing.Data` | Datensätze aus den Datenströmen der anderen Plugins |
-| `Billing.Run` | Lauf: lesen (`DispatchRead`), planen, je Beleg buchen (`inTx` + `dispatch`) |
-| `Billing.Store` | Atlas-Schema und SQL der eigenen Tabellen |
-| `Billing.Api` | Object `ContractBilling` (run, runs, getRun, postings, getPosting; postings auch als Datenstrom) |
+| `Billing.Run` | Lauf: Rechte, planen, je Beleg Vorerfassung, Prüfen, Buchen, Vermerk (`inTx` + `dispatch`) |
+| `Billing.Api` | Objects `ContractBilling` (run, refresh, cache) und `ContractBillingCache` (onEvent) |
 
 Tests (`cabal test contract-billing`): Fälligkeiten (Teilperioden, Anpassung, Kündigung,
 Quartal nachschüssig, Monatsende, einmalig, Rundung) und Belegplanung (Richtung, Kontierung je
-Feldstatus, Minderung, fehlendes Abstimmkonto, bereits Gebuchtes).
+Feldstatus, Minderung, fehlendes Abstimmkonto, bereits Vermerktes, Überschneidung).
+
+Seit 0.2.0 liegen die eigenen Tabellen `contract_billing__*` von 0.1.0 leer in der Datenbank
+(dbschema löscht keine Tabellen).
 
 ### Nächste Schritte
 

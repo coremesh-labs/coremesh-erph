@@ -1,67 +1,59 @@
--- | Ein Buchungslauf: Daten lesen (Datenströme aus contract, realestate,
--- ledger), planen ("Billing.Plan"), je Beleg in einer Transaktion buchen:
+-- | Ein Buchungslauf – ohne SQL, nur über Objects und Actions:
 --
---   1. JournalDraft.create      – Buchungskopf der Vorerfassung
---   2. JournalDraftItem.create  – je Position
---   3. JournalDraft.post        – Beleg im Universal Journal
---   4. contract_billing__posting – gebuchte Fälligkeiten vermerken
+--   1. Stammdaten aus dem Cache ("Billing.Cache"), die schon vermerkten
+--      Fälligkeiten frisch aus ContractPosting (Datenstrom).
+--   2. Nur Verträge, die der Benutzer sehen darf (Account.Check: Contract.read
+--      je Buchungskreis und Vertragsart).
+--   3. Planen ("Billing.Plan").
+--   4. Je Beleg in einer Transaktion: JournalDraft.create, je Position
+--      JournalDraftItem.create, JournalDraft.simulate (nicht buchbar = nichts
+--      angelegt), bei „automatisch buchen“ der Vertragsart JournalDraft.post,
+--      zuletzt ContractPostingService.record (Fälligkeiten vermerken).
 --
--- Alle vier Schritte laufen in derselben Transaktion (der Ledger nimmt an ihr
--- teil); scheitert einer, ist nichts gebucht und der Lauf meldet den Fehler für
--- diesen Beleg und macht mit dem nächsten weiter.
+-- Die Transaktion öffnet das Plugin über die Host-API (inTx); Ledger und
+-- Vertragsmodul nehmen an ihr teil. Scheitert ein Schritt, ist für diesen
+-- Beleg nichts angelegt; der Lauf meldet es und macht weiter.
 module Billing.Run
   ( RunRequest (..)
   , runBilling
-  , readAll
   , currencyDecimals
   ) where
 
 import Control.Exception (try)
-import Control.Monad (forM, forM_, when)
-import Crypto.Random (getRandomBytes)
+import Control.Monad (forM)
 import Data.Aeson (Value (..), object, (.=))
-import Data.Aeson qualified as J
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
-import Data.ByteArray.Encoding (Base (Base16), convertToBase)
-import Data.ByteString (ByteString)
-import Data.IORef
 import Data.List (nub)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Text.Encoding qualified as TE
-import Data.Text.Lazy qualified as TL
-import Data.Text.Lazy.Encoding qualified as TLE
 import Data.Time.Calendar (Day)
-import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (iso8601Show)
 
+import Billing.Cache
 import Billing.Data
 import Billing.Plan
 import Billing.Schedule (Due (..))
-import Billing.Store
 import CoreMesh.Plugin
 
 data RunRequest = RunRequest
   { rrCompany :: Text
   , rrTo :: Day
   , rrContract :: Maybe Text -- ^ nur dieser Vertrag
-  , rrSimulate :: Bool -- ^ nur planen, nichts buchen
+  , rrSimulate :: Bool -- ^ nur planen, nichts anlegen
+  , rrRunId :: Maybe Text -- ^ Lauf im Vertragsmodul (ContractPostingRun)
   }
 
--- | Liest (object, list) als Datenstrom vollständig.
-readAll :: Call -> Text -> [(Text, Value)] -> IO [Record]
-readAll call obj params = do
-  cols <- newIORef []
-  rows <- newIORef []
-  _ <-
-    dispatchRead call obj "list" (Object (KM.fromList [(K.fromText k, v) | (k, v) <- params])) $
-      RowWriter
-        { writeHeader = writeIORef cols . headerColumns
-        , writeRows = \rs -> modifyIORef' rows (reverse rs <>)
-        }
-  records <$> readIORef cols <*> (reverse <$> readIORef rows)
+-- | Ergebnis eines Belegs.
+data Outcome = Outcome
+  { oDraft :: Text
+  , oDocument :: Maybe Text -- ^ Belegnummer, wenn gebucht
+  }
+
+database :: Text
+database = "main"
 
 -- | Nachkommastellen der Währung aus dem Hauptbuch (Standard 2).
 currencyDecimals :: Call -> Text -> IO Int
@@ -72,32 +64,30 @@ currencyDecimals call cur = do
     Left (_ :: PluginError) -> 2
     _ -> 2
 
-newId :: IO Text
-newId = TE.decodeUtf8 . convertToBase Base16 <$> (getRandomBytes 12 :: IO ByteString)
-
-now :: IO Text
-now = T.pack . iso8601Show <$> getCurrentTime
-
-runBilling :: Call -> RunRequest -> IO Value
-runBilling call RunRequest {..} = do
-  let cc = [("company_code", String rrCompany)]
-      history = ("includeHistory", Bool True)
+runBilling :: Cache -> Call -> RunRequest -> IO Value
+runBilling cache call RunRequest {..} = do
+  sys <- systemCall call (callTenantId call)
+  let get = slice cache sys rrCompany
       only :: (a -> Text) -> [a] -> [a]
       only f = maybe id (\c -> filter ((== c) . f)) rrContract
-  types <- map contractType <$> readAll call "ContractType" cc
-  contracts <- only cId . concatMap (maybe [] pure . contract) <$> readAll call "Contract" (history : cc)
-  condRecs <- readAll call "ContractCondition" (history : cc)
+  types <- map contractType <$> get Types
+  allContracts <- only cId . concatMap (maybe [] pure . contract) <$> get Contracts
+  contracts <- visibleContracts call allContracts
+  let ids = Set.fromList (map cId contracts)
+      mine :: (a -> Text) -> [a] -> [a]
+      mine f = filter ((`Set.member` ids) . f)
+  condRecs <- get Conditions
   let parsed = [(text "contract_id" r, condition r) | r <- condRecs]
-      conditions = only kContract [k | (_, Right k) <- parsed]
-      badConditions = [(c, "Kondition nicht lesbar: " <> e) | (c, Left e) <- parsed, maybe True (== c) rrContract]
-  objects <- only oContract . concatMap (maybe [] pure . contractObject) <$> readAll call "ContractObject" (history : cc)
+      conditions = mine kContract [k | (_, Right k) <- parsed]
+      badConditions = [(c, "Kondition nicht lesbar: " <> e) | (c, Left e) <- parsed, c `Set.member` ids]
+  objects <- mine oContract . concatMap (maybe [] pure . contractObject) <$> get Objects
   measurements <-
     if any kPerUnit conditions
-      then concatMap (maybe [] pure . measurement) <$> readAll call "Measurement" (history : cc)
+      then concatMap (maybe [] pure . measurement) <$> get Measurements
       else pure []
-  accounts <- map account <$> readAll call "GLAccountCompany" [("company_code_id", String rrCompany)]
-  status <- fieldStatus <$> readAll call "FieldStatus" []
-  posted <- postedKeys call rrCompany rrContract
+  accounts <- map account <$> get Accounts
+  status <- fieldStatus <$> get FieldStatuses
+  posted <- postedKeys sys rrCompany
   let input =
         Input
           { inTypes = Map.fromList [(ctCode t, t) | t <- types]
@@ -111,58 +101,82 @@ runBilling call RunRequest {..} = do
           }
       (docs, planMsgs) = plan rrTo input
       msgs0 = badConditions <> planMsgs
+      autoPost d = maybe False ctAutoPost (Map.lookup (cType (dContract d)) (inTypes input))
   decimals <- Map.fromList <$> forM (nub (map (cCurrency . dContract) docs)) (\c -> (c,) <$> currencyDecimals call c)
   let dec c = Map.findWithDefault 2 c decimals
-      itemCount = sum (map (length . dEntries) docs)
   if rrSimulate
     then
       pure $
         object
-          [ "message" .= simulationText (length docs) itemCount (length msgs0)
+          [ "message" .= ("Vorschau: " <> tshow (length docs) <> " Belege mit " <> tshow (sum (map (length . dEntries) docs)) <> " Fälligkeiten" <> problems (length msgs0))
           , "documents" .= length docs
-          , "items" .= itemCount
-          , "planned" .= map (docJson dec) docs
+          , "items" .= sum (map (length . dEntries) docs)
+          , "planned" .= map (docJson dec autoPost) docs
           , "messages" .= map msgJson msgs0
           ]
     else do
-      runId <- newId
-      started <- now
-      insertRun call runId rrCompany rrTo rrContract started
       results <- forM docs $ \d -> do
-        r <- try (inTx call database (\tx -> postDoc tx runId (dec (cCurrency (dContract d))) d))
+        r <- try (inTx call database (\tx -> postDoc tx rrRunId (dec (cCurrency (dContract d))) (autoPost d) d))
         pure (d, r)
-      let ok = [(d, n) | (d, Right n) <- results]
+      let ok = [(d, o) | (d, Right o) <- results]
           failed = [(cId (dContract d), "Beleg " <> formatDay (dDate d) <> ": " <> errText e) | (d, Left e) <- results]
           msgs = msgs0 <> failed
           items = sum [length (dEntries d) | (d, _) <- ok]
+          drafts = length [() | (_, o) <- ok, oDocument o == Nothing]
+          runStatus :: Text
           runStatus
             | null docs && null msgs = "EMPTY"
             | null ok && not (null msgs) = "FAILED"
             | not (null msgs) = "PARTIAL"
             | otherwise = "DONE"
-          message = runText (length ok) items (length msgs) rrTo
-      finished <- now
-      finishRun call runId runStatus (length ok) items (length msgs) message (jsonText (map msgJson msgs)) finished
-      when (not (null failed)) $
-        logMessage call LogWarn "Buchungslauf mit Fehlern" [("run", runId), ("errors", T.pack (show (length msgs)))]
+          message =
+            tshow (length ok) <> " Belege mit " <> tshow items <> " Fälligkeiten bis " <> formatDay rrTo
+              <> " (" <> tshow (length ok - drafts) <> " gebucht, " <> tshow drafts <> " vorerfasst)" <> problems (length msgs)
+      if null failed then pure () else logMessage call LogWarn "Sollstellung mit Meldungen" [("errors", tshow (length msgs))]
       pure $
         object
-          [ "id" .= runId
-          , "_id" .= runId
+          [ "status" .= runStatus
           , "message" .= message
-          , "status" .= (runStatus :: Text)
           , "documents" .= length ok
+          , "drafts" .= drafts
           , "items" .= items
           , "errors" .= length msgs
-          , "posted" .= [object ["contract_id" .= cId (dContract d), "due_date" .= formatDay (dDate d), "document_number" .= n] | (d, n) <- ok]
+          , "results"
+              .= [ object ["contract_id" .= cId (dContract d), "due_date" .= formatDay (dDate d), "draft_id" .= oDraft o, "document_number" .= oDocument o]
+                 | (d, o) <- ok
+                 ]
           , "messages" .= map msgJson msgs
           ]
   where
     errText (PluginError _ m) = m
 
--- | Bucht einen Beleg über die Vorerfassung; liefert die Belegnummer.
-postDoc :: Call -> Text -> Int -> Doc -> IO Text
-postDoc tx runId decimals Doc {..} = do
+-- | Nur Verträge, die der Benutzer lesen darf (Systemanfragen: alle).
+visibleContracts :: Call -> [Contract] -> IO [Contract]
+visibleContracts call cs
+  | T.null (callUserId call) = pure cs
+  | otherwise = do
+      let combos = nub [(cCompany c, cType c) | c <- cs]
+      allowed <- forM combos $ \(cc, t) -> do
+        r <-
+          dispatch call "Account" "Check" $
+            object ["object" .= ("Contract" :: Text), "action" .= ("read" :: Text), "company_code" .= cc, "attrs" .= object ["contract_type" .= t]]
+        pure ((cc, t), r == object ["allowed" .= True])
+      let ok = Map.fromList allowed
+      pure [c | c <- cs, Map.findWithDefault False (cCompany c, cType c) ok]
+
+-- | Bereits vermerkte Fälligkeiten (vorerfasst oder gebucht) – immer frisch.
+postedKeys :: Call -> Text -> IO (Set.Set Key)
+postedKeys sys cc = do
+  rs <- readAll sys "ContractPosting" [("company_code", String cc)]
+  pure . Set.fromList $
+    [ (text "contract_id" r, text "condition_type" r, text "object_id" r, d)
+    | r <- rs
+    , Just d <- [day "period_from" r]
+    ]
+
+-- | Vorerfassung anlegen, füllen, prüfen, ggf. buchen, Fälligkeiten vermerken.
+postDoc :: Call -> Maybe Text -> Int -> Bool -> Doc -> IO Outcome
+postDoc tx runId decimals autoPost Doc {..} = do
   let c = dContract
       stamp = T.filter (/= '-') (T.pack (iso8601Show dDate))
   draft <-
@@ -180,37 +194,69 @@ postDoc tx runId decimals Doc {..} = do
               ]
         ]
   draftId <- field "id" draft
-  forM_ dLines $ \Line {..} ->
-    dispatch tx "JournalDraftItem" "create" $
+  mapM_ (addLine draftId) dLines
+  _ <- dispatch tx "JournalDraft" "simulate" (object ["id" .= draftId])
+  (docId, docNo) <-
+    if autoPost
+      then do
+        res <- dispatch tx "JournalDraft" "post" (object ["id" .= draftId])
+        (,) <$> (Just <$> field "id" res) <*> (Just <$> field "document_number" res)
+      else pure (Nothing, Nothing)
+  _ <-
+    dispatch tx "ContractPostingService" "record" $
       object
-        [ "data"
-            .= object
-              ( [ "draft_id" .= draftId
-                , "account_number" .= lAccount
-                , "shkzg" .= lSide
-                , "amount" .= formatAmount decimals lAmount
-                , "item_text" .= lText
-                ]
-                  <> [K.fromText k .= v | (k, v) <- lFields]
-              )
+        [ "company_code" .= cCompany c
+        , "run_id" .= runId
+        , "draft_id" .= draftId
+        , "status" .= (if autoPost then "POSTED" else "DRAFT" :: Text)
+        , "document_id" .= docId
+        , "document_number" .= docNo
+        , "currency" .= cCurrency c
+        , "entries" .= map entryJson dEntries
         ]
-  res <- dispatch tx "JournalDraft" "post" (object ["id" .= draftId])
-  docId <- field "id" res
-  docNo <- field "document_number" res
-  stampNow <- now
-  forM_ dEntries (insertPosting tx (cCompany c) runId stampNow draftId docId docNo (cCurrency c))
-  pure docNo
+  pure (Outcome draftId docNo)
   where
+    addLine draftId Line {..} =
+      dispatch tx "JournalDraftItem" "create" $
+        object
+          [ "data"
+              .= object
+                ( [ "draft_id" .= draftId
+                  , "account_number" .= lAccount
+                  , "shkzg" .= lSide
+                  , "amount" .= formatAmount decimals lAmount
+                  , "item_text" .= lText
+                  ]
+                    <> [K.fromText k .= v | (k, v) <- lFields]
+                )
+          ]
     field k v = case v of
       Object o | Just (String s) <- KM.lookup (K.fromText k) o -> pure s
-      _ -> pluginError Internal ("Antwort des Ledgers ohne " <> k)
+      _ -> pluginError Internal ("Antwort ohne " <> k)
 
-docJson :: (Text -> Int) -> Doc -> Value
-docJson dec Doc {..} =
+entryJson :: Entry -> Value
+entryJson e =
+  let k = eCondition e
+      d = eDue e
+   in object
+        [ "contract_id" .= kContract k
+        , "condition_type" .= kType k
+        , "object_id" .= kObject k
+        , "period_from" .= iso8601Show (dueFrom d)
+        , "period_to" .= iso8601Show (dueTo d)
+        , "due_date" .= iso8601Show (dueDate d)
+        , "amount" .= dueAmount d
+        , "account_number" .= eAccount e
+        , "rent_object_id" .= eRentObject e
+        ]
+
+docJson :: (Text -> Int) -> (Doc -> Bool) -> Doc -> Value
+docJson dec autoPost d@Doc {..} =
   object
     [ "contract_id" .= cId dContract
     , "due_date" .= formatDay dDate
     , "document_type" .= dDocumentType
+    , "auto_post" .= autoPost d
     , "lines"
         .= [ object ["account" .= lAccount, "side" .= lSide, "amount" .= formatAmount (dec (cCurrency dContract)) lAmount, "text" .= lText]
            | Line {..} <- dLines
@@ -220,17 +266,6 @@ docJson dec Doc {..} =
 
 msgJson :: (Text, Text) -> Value
 msgJson (c, m) = object ["contract_id" .= c, "message" .= m]
-
-jsonText :: J.ToJSON a => a -> Text
-jsonText = TL.toStrict . TLE.decodeUtf8 . J.encode
-
-simulationText :: Int -> Int -> Int -> Text
-simulationText docs items errs =
-  "Vorschau: " <> tshow docs <> " Belege mit " <> tshow items <> " Fälligkeiten" <> problems errs
-
-runText :: Int -> Int -> Int -> Day -> Text
-runText docs items errs to =
-  tshow docs <> " Belege mit " <> tshow items <> " Fälligkeiten gebucht bis " <> formatDay to <> problems errs
 
 problems :: Int -> Text
 problems 0 = ""

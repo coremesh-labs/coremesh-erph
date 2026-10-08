@@ -94,6 +94,7 @@ data ContractType = ContractType
   , ctDirection :: Text -- ^ RECEIVABLE | PAYABLE
   , ctReconciliation :: Maybe Text -- ^ Abstimmkonto (Debitor bzw. Kreditor)
   , ctDocumentType :: Maybe Text -- ^ Belegart der Sollstellung
+  , ctAutoPost :: Bool -- ^ geprüfte Vorerfassung gleich buchen (sonst offen lassen)
   }
   deriving stock (Show)
 
@@ -162,7 +163,7 @@ until' k r = maybe openEnd id (day k r)
 
 contractType :: Record -> ContractType
 contractType r =
-  ContractType (text "code" r) (text "direction" r) (textMaybe "reconciliation_account" r) (textMaybe "posting_document_type" r)
+  ContractType (text "code" r) (text "direction" r) (textMaybe "reconciliation_account" r) (textMaybe "posting_document_type" r) (bool "auto_post" r)
 
 contract :: Record -> Maybe Contract
 contract r = do

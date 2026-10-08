@@ -97,8 +97,12 @@ plan until Input {..} = (concat docs, concat msgs)
         Nothing -> ([], [(cId c, "Vertragsart " <> cType c <> ": Abstimmkonto fehlt (Verträge → Vertragsarten)")])
         Just recon ->
           let results = map (entriesFor c) (Map.findWithDefault [] (cId c) conditionsOf)
-              entries = concat [es | Right es <- results]
-              errors = [(cId c, e) | Left e <- results]
+              candidates = concat [es | Right es <- results]
+              -- Gleiche Fälligkeit zweimal = Zeitscheiben einer Kondition überschneiden sich (Datenfehler).
+              clashes = Map.keys (Map.filter (> (1 :: Int)) (Map.fromListWith (+) [(entryKey e, 1) | e <- candidates]))
+              overlap = [(cId c, "Kondition " <> t <> ": Zeitscheiben überschneiden sich (" <> formatDay from <> ") – Vertrag nicht gebucht") | (_, t, _, from) <- clashes]
+              entries = if null clashes then candidates else []
+              errors = [(cId c, e) | Left e <- results] <> overlap
               byDate = Map.fromListWith (flip (<>)) [(dueDate (eDue e), [e]) | e <- entries]
               payable = ctDirection ct == "PAYABLE"
               docType = maybe (if payable then "KR" else "DR") id (ctDocumentType ct)

@@ -1,2 +1,23 @@
+# Build (cabal)
 dist-newstyle/
+cabal.project.local
+cabal.project.local~
+.ghc.environment.*
+
+# Andere Haskell-Werkzeuge und Zwischenstände
+.stack-work/
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+*.prof
+*.hp
+*.eventlog
+
+# Gebaute Plugins (build.sh / build.ps1)
 /bin/
+
+# Editoren
+.vscode/
+.idea/
+*.swp

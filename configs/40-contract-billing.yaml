@@ -10,10 +10,14 @@ host:
   extra_plugin_dirs: [../coremesh-erp/bin/plugins, ../coremesh-erph/bin/plugins]
 
 plugins:
-  # Vertragsbuchung: Sollstellung der Verträge (contract) über die Vorerfassung
-  # des Hauptbuchs (ledger). Oberfläche im Modul Verträge (Buchungsläufe,
-  # „Buchen …“ am Vertrag).
+  # Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge (contract)
+  # über die Vorerfassung des Hauptbuchs (ledger). Läufe, Sollstellungen und
+  # Oberfläche hält das Vertragsmodul.
   contract-billing:
-    version: 0.1.0
+    version: 0.2.0
+    # Systemanfragen für die Kopie der Stammdaten (unabhängig vom buchenden Benutzer).
+    ingress: true
+    settings:
+      cache_ttl: 1h                  # Sicherheitsnetz: Ausschnitte spätestens dann neu laden
     databases:
-      main: { access: write }        # Tabellen contract_billing__* via DBSchema.Init
+      main: { access: write }        # nur für Transaktionen (inTx); das Plugin hat keine Tabellen

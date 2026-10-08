@@ -1,12 +1,14 @@
 cabal-version: 3.0
 name:          contract-billing
-version:       0.1.0
+version:       0.2.0
 synopsis:      Vertragsbuchung: Sollstellung der Verträge im Hauptbuch
 description:
   CoreMesh-Plugin in Haskell. Bucht die fälligen Konditionen der Verträge
   (Plugin contract) über die Vorerfassung des Hauptbuchs (Plugin ledger):
   Vorerfassung anlegen, Positionen füllen, buchen – je Vertrag und
   Fälligkeitstag ein Beleg, seit der letzten Buchung bis zu einem Stichtag.
+  Ohne eigene Daten und ohne SQL: Stammdaten als Kopie im Speicher, über
+  SystemEvents aktuell; Läufe und Sollstellungen hält das Vertragsmodul.
 license:       NONE
 build-type:    Simple
 
@@ -20,11 +22,11 @@ library
   hs-source-dirs:  src
   exposed-modules:
     Billing.Api
+    Billing.Cache
     Billing.Data
     Billing.Plan
     Billing.Run
     Billing.Schedule
-    Billing.Store
   build-depends:
       base            >= 4.18 && < 5
     , aeson           >= 2.1  && < 2.3
@@ -35,6 +37,7 @@ library
     , http-types      >= 0.12 && < 0.13
     , ram             >= 0.20 && < 0.23
     , scientific      >= 0.3  && < 0.4
+    , stm             >= 2.5  && < 2.6
     , text            >= 2.0  && < 2.2
     , time            >= 1.12 && < 1.15
     , vector          >= 0.13 && < 0.14
