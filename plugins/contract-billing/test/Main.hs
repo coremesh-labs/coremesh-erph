@@ -14,6 +14,7 @@ import Billing.Data
 import Billing.Loan
 import Billing.Plan
 import Billing.Schedule
+import Billing.Settlement
 
 main :: IO ()
 main = do
@@ -95,6 +96,7 @@ main = do
 
   planTests check
   loanTests check
+  settlementTests check
 
   n <- readIORef failures
   if n == 0 then putStrLn "alle Tests bestanden" else exitFailure
@@ -339,3 +341,52 @@ loanTests check = do
   where
     roundTo :: Rational -> Integer
     roundTo x = roundDiv (numerator x) (denominator x)
+
+-- | Vertragsabrechnung (WEG): Prüfungen und Buchungsplan.
+settlementTests :: (forall a. (Eq a, Show a) => String -> a -> a -> IO ()) -> IO ()
+settlementTests check = do
+  let d = fromGregorian
+      h =
+        SetHead
+          { shFrom = d 2025 1 1, shTo = d 2025 12 31, shDate = d 2026 5 10, shPosting = d 2026 5 10, shReference = "WEG-2025"
+          , shStatedAdvances = Just 360000, shStatedResult = Just (-152203), shReserveOpening = Just 420000, shReserveWithdrawal = 0
+          , shReserveClosing = Just 480000, shReserveAccount = Nothing, shWithdrawalAccount = Nothing, shStatus = "OPEN"
+          }
+      item n cat typ total kt ks amt acc = SetItem n "" cat typ total (if kt == Nothing then "" else "MEA") kt ks amt acc "RentObject" "WG001"
+      water = item 1 "WASSER" "ALLOCABLE" (Just 1240000) (Just 1000) (Just (8532 / 100)) 105797 "7000"
+      items = [water, item 2 "VERWALT" "NON_ALLOCABLE" Nothing Nothing Nothing 42000 "7300", item 3 "RUECKL" "RESERVE" Nothing Nothing Nothing 60000 "1550"]
+      prev = Just (h {shFrom = d 2024 1 1, shTo = d 2024 12 31, shReserveClosing = Just 420000}, items)
+      level name cs = [chLevel c | c <- cs, chName c == name]
+      cs = checks 5 h items 360000 prev (Just 420000)
+  check "Einzelbetrag aus Schlüssel (12.400 × 85,32 / 1000)" (Just 105797) (expectedShare water)
+  check "Prüfungen ok" [] [(chName c, chLevel c) | c <- cs, chLevel c `notElem` [Ok, Info]]
+  check "Zu buchen: Guthaben" [Just (-152203)] [chActual c | c <- cs, chName c == "Zu buchen"]
+
+  let off = checks 5 h [water {siAmount = 105900}] 350000 Nothing (Just 400000)
+  check "Abweichung Einzelbetrag" [Deviation] (level "Position 1 WASSER" off)
+  check "Abweichung Vorauszahlungen" [Deviation] (level "Vorauszahlungen" off)
+  check "Abweichung Rücklage Hauptbuch" [Deviation] (level "Rücklage Hauptbuch" off)
+  check "Fehlende Kostenart des Vorjahres" [Info] (level "Kostenart VERWALT" (checks 5 h [water, last items] 360000 prev (Just 420000)))
+  check "Ohne Positionen: Fehler" [Failure] (level "Positionen" (checks 5 h [] 0 Nothing Nothing))
+  check "Innerhalb der Toleranz" [Ok] (level "Position 1 WASSER" (checks 5 h [water {siAmount = 105800}] 0 Nothing Nothing))
+  check "Gebucht: Hauptbuch enthält die Zuführung" [Ok] (level "Rücklage Hauptbuch" (checks 5 h {shStatus = "POSTED"} items 360000 Nothing (Just 480000)))
+
+  -- Buchungsplan: Kosten Soll, Vorauszahlungen Haben, Guthaben Soll Kreditor
+  case settlementLines "Abrechnung 2025" h items [("1590", 300000), ("1591", 60000)] "2900" of
+    Left e -> check "Buchungsplan" "" e
+    Right ls -> do
+      check "Plan: Kosten im Soll" [("7000", "S", 105797), ("7300", "S", 42000), ("1550", "S", 60000)]
+        [(plAccount l, plSide l, plAmount l) | l <- take 3 ls]
+      check "Plan: Vorauszahlungen im Haben" [("1590", "H", 300000), ("1591", "H", 60000)] [(plAccount l, plSide l, plAmount l) | l <- take 2 (drop 3 ls)]
+      check "Plan: Guthaben Soll Kreditor" [("2900", "S", 152203, True)] [(plAccount l, plSide l, plAmount l, plPartner l) | l <- drop 5 ls]
+      check "Plan: ausgeglichen" 0 (sum [if plSide l == "S" then plAmount l else negate (plAmount l) | l <- ls])
+  -- Nachzahlung und Entnahme
+  let hw = h {shReserveWithdrawal = 50000, shWithdrawalAccount = Just "7100"}
+  case settlementLines "A" hw items [("1590", 100000)] "2900" of
+    Left e -> check "Plan mit Entnahme" "" e
+    Right ls -> do
+      check "Entnahme: Gegenkonto Soll, Rücklage Haben" [("7100", "S", 50000), ("1550", "H", 50000)]
+        [(plAccount l, plSide l, plAmount l) | l <- ls, plText l == "Entnahme Rücklage A"]
+      check "Nachzahlung Haben Kreditor" [("2900", "H", 107797)] [(plAccount l, plSide l, plAmount l) | l <- ls, plPartner l]
+  check "Entnahme ohne Gegenkonto" (Left "Entnahme aus der Rücklage: Gegenkonto fehlt")
+    (either Left (const (Right ())) (settlementLines "A" h {shReserveWithdrawal = 1} items [] "2900"))

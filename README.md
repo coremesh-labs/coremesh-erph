@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.5.0 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.6.0 |
 
 ## Bauen, testen, starten
 
@@ -138,6 +138,16 @@ vor jedem Lauf die offenen Vorerfassungen ab (Events gehen höchstens einmal zu)
   Nachberechnung bei geänderten Konditionen inklusive.
 - `ContractBilling.loanSchedule` liefert den Tilgungsplan als Tabelle (Aktion „Tilgungsplan“).
 
+### Vertragsabrechnung
+
+`ContractBilling.checkSettlement` und `postSettlement` (`Billing.Settlement`, rein): Prüfungen
+einer Vertragsabrechnung (Einzelbetrag aus Gesamtkosten und Schlüssel, Vorauszahlungen,
+Ergebnis, Rücklage gegen Vorjahr und Hauptbuch – `AccountBalance.list`, fehlende Kostenarten)
+als Tabelle mit Ampel, Buchungsplan (Kosten im Soll, gebuchte Vorauszahlungen je Konto im
+Haben, Entnahme aus der Rücklage, Differenz an das Partnerkonto) und Buchung über die
+Vorerfassung in einer Transaktion; der Vermerk geht an `ContractPostingService.recordSettlement`.
+Die Vorauszahlungs-Konditionsarten und die Toleranz gibt das Vertragsmodul mit.
+
 ### Nachberechnung
 
 Jeder Lauf rechnet auch die schon vermerkten Perioden neu und vergleicht je Vertrag,
@@ -190,6 +200,7 @@ gebucht):
 | Modul | Inhalt |
 |---|---|
 | `Billing.Schedule` | Perioden, anteilige Beträge, Fälligkeitstage, Einmalzahlungen und Raten (rein) |
+| `Billing.Settlement` | Vertragsabrechnung: Prüfungen und Buchungsplan (rein) |
 | `Billing.Loan` | Tilgungsplan: Zinsmethoden, Annuität, Ratentilgung, endfällig, Sondertilgung, Zinswechsel (rein) |
 | `Billing.Plan` | Belege aus Verträgen, Konditionen, Objekten, Konten, Feldstatus und dem Vermerkten; Nachberechnung (rein) |
 | `Billing.Cache` | Kopie der Stammdaten, Ungültig per Event, Haltezeit |

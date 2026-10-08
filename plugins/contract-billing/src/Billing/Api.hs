@@ -4,6 +4,8 @@
 -- |---|---|---|
 -- | ContractBilling.run | company_code, to_date, contract_id?, simulate?, run_id? | Belege, Meldungen (simulate: geplante Belege) |
 -- | ContractBilling.loanSchedule | company_code, contract_id | Tilgungsplan (message, table) |
+-- | ContractBilling.checkSettlement | company_code, contract_id, period_from, advance_types, tolerance | Prüfungen (message, table) |
+-- | ContractBilling.postSettlement | wie checkSettlement | prüfen, vorerfassen, ggf. buchen, vermerken |
 -- | ContractBilling.refresh | – | Cache des Mandanten verwerfen |
 -- | ContractBilling.cache | – | Zustand des Caches (Diagnose) |
 -- | ContractBillingCache.onEvent | SystemEvent | betroffenen Ausschnitt verwerfen |
@@ -34,10 +36,11 @@ callbackObject = "ContractBillingCache"
 
 billingPlugin :: Cache -> Plugin
 billingPlugin cache =
-  (defaultPlugin "contract-billing" "0.5.0")
+  (defaultPlugin "contract-billing" "0.6.0")
     { pluginDescription = "Vertragsbuchung: Sollstellung der Verträge über die Vorerfassung des Hauptbuchs"
     , pluginCapabilities =
-        [ Capability "ContractBilling" ["run", "loanSchedule", "refresh", "cache"] [] "Sollstellung der Verträge rechnen und buchen, Tilgungspläne"
+        [ Capability "ContractBilling" ["run", "loanSchedule", "checkSettlement", "postSettlement", "refresh", "cache"] []
+            "Sollstellung der Verträge rechnen und buchen, Tilgungspläne, Vertragsabrechnungen prüfen und buchen"
         , Capability callbackObject ["onEvent"] [] "Änderungen an Stammdaten (SystemEvent)"
         ]
     , pluginConfigure = \call settings -> do
@@ -83,6 +86,16 @@ handler cache call req = case (reqObject req, reqAction req) of
     cc <- required "company_code" "Buchungskreis"
     cid <- required "contract_id" "Vertrag"
     response <$> loanPlan cache call cc cid
+  (_, a) | a `elem` ["checkSettlement", "postSettlement"] -> do
+    cc <- required "company_code" "Buchungskreis"
+    cid <- required "contract_id" "Vertrag"
+    fromText <- required "period_from" "Zeitraum von"
+    from <- maybe (pluginError InvalidArgument ("Zeitraum von: Datum erwartet, nicht " <> fromText)) pure (iso8601ParseM (T.unpack (T.take 10 fromText)))
+    let advance = case KM.lookup "advance_types" p of
+          Just (Array xs) -> [t | String t <- foldr (:) [] xs]
+          _ -> []
+        req' = SettlementRequest cc cid from advance (maybe "0" id (textMaybe "tolerance" p))
+    response <$> (if a == "checkSettlement" then settlementCheck else settlementPost) cache call req'
   ("ContractBilling", "refresh") -> do
     clearTenant cache (callTenantId call)
     pure (response (object ["message" .= ("Kopie der Stammdaten verworfen; der nächste Lauf lädt neu" :: Text)]))
