@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.7.0 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.8.0 |
 
 ## Bauen, testen, starten
 
@@ -157,7 +157,10 @@ Mietervertragsarten (Vertrags- und Objektzeitraum), Personen-Zeitscheiben, Bemes
 Quellen (Einzelposten, gebuchte Eingangsrechnungen, gebuchte Vertragsabrechnungen) und die
 Vorauszahlungen (`ContractPosting`, anteilig). Gerechnet wird ganzzahlig in Cent × Faktor auf
 internen Konten (Sammeln, Umbuchen, Verteilen, Zeitanteile, Rundung); jede Buchung trägt ihre
-Formel. Prüfungen: liegengebliebene Töpfe, Summe der Quellen = Mieter + Eigentümer, Rundung.
+Formel. Jede Sammelregel ordnet ihre Quelle nach Leistungs-/Abrechnungszeitraum, Buchungs-
+oder Belegdatum zu. Prüfungen: liegengebliebene Töpfe, Summe der Quellen = Mieter + Eigentümer,
+Rundung, Vollständigkeit der Vertragsabrechnungen (Lücken, im Vorjahr abgerechnet und jetzt
+fehlend, erfasst und nicht gebucht – Fehler, `failures` in der Antwort).
 
 ### Nachberechnung
 

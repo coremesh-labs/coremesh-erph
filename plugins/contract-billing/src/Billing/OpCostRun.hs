@@ -23,11 +23,12 @@ import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe, mapMaybe)
+import Control.Monad (join)
+import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time.Calendar (Day)
+import Data.Time.Calendar (Day, addGregorianYearsClip)
 import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
 
 import Billing.Cache
@@ -103,58 +104,76 @@ computeOpCostRun cache call p = do
         | objType == "BusinessEntity" = if unitType == "BusinessEntity" && objId == unit then Just ToPool else Nothing
         | otherwise = Nothing
       collects t = [r | r <- rules, ruKind r == "COLLECT", ruSourceType r == t]
-      values t = Set.fromList (map ruSourceValue (collects t))
-  -- LEDGER
+      inPeriod d = d >= from && d <= to
+      -- Zuordnung nach Datum: Buchungs- oder Belegdatum im Zeitraum, dann ganz
+      dated r posting document = case ruAssignment r of
+        "DOCUMENT_DATE" -> (,) <$> document <*> pure (" (Belegdatum)" :: Text)
+        _ -> (,) <$> posting <*> pure (" (Buchungsdatum)" :: Text)
+      whole total (d, label) = if inPeriod d then Just (total, label <> " " <> formatDay d) else Nothing
+  -- LEDGER: Einzelposten haben keinen Leistungszeitraum – Buchungs- oder Belegdatum
+  docDates <-
+    if any ((== "DOCUMENT_DATE") . ruAssignment) (collects "LEDGER")
+      then
+        Map.fromList . map (\h -> ((text "document_number" h, text "fiscal_year" h), day "document_date" h))
+          <$> readAll sys "JournalEntry" [("company_code_id", String cc)]
+      else pure mempty
   ledgerSources <-
     concat
       <$> mapM
-        ( \acc -> do
+        ( \r -> do
             -- Regel: Konto mit Kontenplan-Präfix (SKR25-6300), Einzelposten ohne
-            items <- readAll sys "JournalEntryItem" [("company_code_id", String cc), ("account_number", String (shortAccount acc))]
+            items <- readAll sys "JournalEntryItem" [("company_code_id", String cc), ("account_number", String (shortAccount (ruSourceValue r)))]
             pure
-              [ Source "LEDGER" acc ref amt tgt formula ""
+              [ Source "LEDGER" (ruSourceValue r) ref amt tgt formula "" (ruNo r) Nothing
               | it <- items
-              , Just d <- [day "posting_date" it]
-              , d >= from && d <= to
+              , let docNo = text "document_number" it
+              , Just dl <- [dated r (day "posting_date" it) (join (Map.lookup (docNo, text "fiscal_year" it) docDates))]
+              , inPeriod (fst dl)
               , T.null (text "ledger" it) || text "ledger" it == ledger
               , Just amt <- [int "amount_local_curr" it]
               , Just tgt <- [target (textMaybe "rent_contract_id" it) "RentObject" (text "rent_object_id" it)]
-              , let docNo = text "document_number" it
-                    ref = "JE:" <> docNo <> "/" <> text "line_item_number" it
-                    formula = "Beleg " <> docNo <> " Pos. " <> text "line_item_number" it <> " vom " <> formatDay d <> textSuffix (text "item_text" it)
+              , let ref = "JE:" <> docNo <> "/" <> text "line_item_number" it
+                    formula = "Beleg " <> docNo <> " Pos. " <> text "line_item_number" it <> snd dl <> " " <> formatDay (fst dl) <> textSuffix (text "item_text" it)
               ]
         )
-        (Set.toList (values "LEDGER"))
-  -- INVOICE
+        (collects "LEDGER")
+  -- INVOICE: Leistungszeitraum anteilig (ohne: Buchungsdatum mit Hinweis), Buchungs- oder Rechnungsdatum
   invoiceSources <-
-    if Set.null (values "INVOICE")
+    if null (collects "INVOICE")
       then pure []
       else do
         heads <- Map.fromList . map (\r -> (text "invoice_id" r, r)) . filter ((== "POSTED") . text "status") <$> readAll sys "SupplierInvoice" byCC
-        items <- filter (\r -> text "cost_category" r `Set.member` values "INVOICE" && activeRow r) <$> readAll sys "SupplierInvoiceItem" byCC
+        items <- filter activeRow <$> readAll sys "SupplierInvoiceItem" byCC
+        let assign r h it total = case ruAssignment r of
+              "SERVICE_PERIOD" -> case (day "service_from" it, day "service_to" it) of
+                (Just a, Just b) | a <= b -> (\(x, t) -> (x, t, Nothing)) <$> periodShare period total (a, b)
+                _ ->
+                  (\(x, t) -> (x, t, Just ("Rechnung " <> text "invoice_id" it <> " Pos. " <> text "line_no" it <> " ohne Leistungszeitraum – nach Buchungsdatum zugeordnet")))
+                    <$> (dated r {ruAssignment = "POSTING_DATE"} (day "posting_date" h) Nothing >>= whole total)
+              _ -> (\(x, t) -> (x, t, Nothing)) <$> (dated r (day "posting_date" h) (day "invoice_date" h) >>= whole total)
         pure
-          [ Source "INVOICE" (text "cost_category" it) ref amt tgt formula ""
-          | it <- items
+          [ Source "INVOICE" (ruSourceValue r) ref amt tgt formula "" (ruNo r) warning
+          | r <- collects "INVOICE"
+          , it <- items
+          , text "cost_category" it == ruSourceValue r
           , Just h <- [Map.lookup (text "invoice_id" it) heads]
           , let (objType, objId) =
                   if T.null (text "object_id" it) then (text "object_type" h, text "object_id" h) else (text "object_type" it, text "object_id" it)
           , Just tgt <- [target (textMaybe "contract_id" it) objType objId]
           , Just total <- [int "amount" it]
-          , Just (amt, part) <- [share period total (day "service_from" it) (day "service_to" it) (day "posting_date" h)]
+          , Just (amt, part, warning) <- [assign r h it total]
           , let ref = "INV:" <> text "invoice_id" it <> "/" <> text "line_no" it
                 formula =
                   "Rechnung " <> text "invoice_id" it <> " Pos. " <> text "line_no" it <> " " <> text "supplier_id" h
                     <> textSuffix (text "supplier_reference" h) <> ": " <> formatAmount 2 total <> part <> textSuffix (text "item_text" it)
           ]
-  -- CONTRACT_SETTLEMENT
-  settlementSources <-
-    if Set.null (values "CONTRACT_SETTLEMENT")
-      then pure []
+  -- CONTRACT_SETTLEMENT: Abrechnungszeitraum anteilig, Buchungs- oder Abrechnungsdatum; Vollständigkeit je Vertrag
+  (settlementSources, coverage) <-
+    if null (collects "CONTRACT_SETTLEMENT")
+      then pure ([], [])
       else do
-        heads <-
-          Map.fromList . map (\r -> ((text "contract_id" r, T.take 10 (text "period_from" r)), r)) . filter ((== "POSTED") . text "status")
-            <$> readAll sys "ContractSettlement" byCC
-        items <- filter (\r -> text "cost_category" r `Set.member` values "CONTRACT_SETTLEMENT" && activeRow r) <$> readAll sys "ContractSettlementItem" byCC
+        heads <- Map.fromList . map (\r -> ((text "contract_id" r, T.take 10 (text "period_from" r)), r)) <$> readAll sys "ContractSettlement" byCC
+        items <- filter activeRow <$> readAll sys "ContractSettlementItem" byCC
         let contractTarget cid =
               let os = [co | co <- cobjects, oContract co == cid, overlap period (oFrom co, oTo co) /= Nothing]
                   mine = Set.toList (Set.fromList [oId co | co <- os, oType co == "RentObject", oId co `Set.member` objectIds])
@@ -164,26 +183,63 @@ computeOpCostRun cache call p = do
                     [] -> case [() | co <- os, Just ToPool == target Nothing (oType co) (oId co)] of
                       _ : _ -> Just ToPool
                       [] -> Nothing
-        pure
-          [ Source "CONTRACT_SETTLEMENT" (text "cost_category" it) ref amt tgt formula ""
-          | it <- items
-          , let cid = text "contract_id" it
-                pf = T.take 10 (text "period_from" it)
-          , Just h <- [Map.lookup (cid, pf) heads]
-          , Just tgt <- [if T.null (text "object_id" it) then contractTarget cid else target Nothing (text "object_type" it) (text "object_id" it)]
-          , Just total <- [int "amount" it]
-          , Just sf <- [day "period_from" h]
-          , Just st <- [day "period_to" h]
-          , Just (amt, part) <- [share period total (Just sf) (Just st) Nothing]
-          , let ref = "CS:" <> cid <> "/" <> pf <> "/" <> text "line_no" it
-                keyText = case (textMaybe "total_cost" it, textMaybe "key_share" it, textMaybe "key_total" it) of
-                  (Just tc, Just ks, Just kt) ->
-                    " (Gesamtkosten " <> maybe tc (formatAmount 2) (int "total_cost" it) <> " × " <> ks <> " / " <> kt <> textSuffix (text "allocation_key" it) <> ")"
-                  _ -> ""
-                formula =
-                  "Abrechnung " <> cid <> " " <> formatDay sf <> "–" <> formatDay st <> " Pos. " <> text "line_no" it <> ": "
-                    <> formatAmount 2 total <> keyText <> part
-          ]
+            itemTarget it = if T.null (text "object_id" it) then contractTarget (text "contract_id" it) else target Nothing (text "object_type" it) (text "object_id" it)
+            headOf it = Map.lookup (text "contract_id" it, T.take 10 (text "period_from" it)) heads
+            isPosted h = text "status" h == "POSTED"
+            hPeriod h = (,) <$> day "period_from" h <*> day "period_to" h
+            assign r h total = case ruAssignment r of
+              "SERVICE_PERIOD" -> hPeriod h >>= periodShare period total
+              _ -> dated r (day "posting_date" h) (day "settlement_date" h) >>= whole total
+            prev = (addGregorianYearsClip (-1) from, addGregorianYearsClip (-1) to)
+            contractOf' = Map.fromList [(cId c, c) | c <- contracts]
+            srcs =
+              [ Source "CONTRACT_SETTLEMENT" (ruSourceValue r) ref amt tgt formula "" (ruNo r) Nothing
+              | r <- collects "CONTRACT_SETTLEMENT"
+              , it <- items
+              , text "cost_category" it == ruSourceValue r
+              , Just h <- [headOf it]
+              , isPosted h
+              , Just tgt <- [itemTarget it]
+              , Just total <- [int "amount" it]
+              , Just (sf, st) <- [hPeriod h]
+              , Just (amt, part) <- [assign r h total]
+              , let cid = text "contract_id" it
+                    ref = "CS:" <> cid <> "/" <> T.take 10 (text "period_from" it) <> "/" <> text "line_no" it
+                    keyText = case (textMaybe "total_cost" it, textMaybe "key_share" it, textMaybe "key_total" it) of
+                      (Just tc, Just ks, Just kt) ->
+                        " (Gesamtkosten " <> maybe tc (formatAmount 2) (int "total_cost" it) <> " × " <> ks <> " / " <> kt <> textSuffix (text "allocation_key" it) <> ")"
+                      _ -> ""
+                    formula =
+                      "Abrechnung " <> cid <> " " <> formatDay sf <> "–" <> formatDay st <> " Pos. " <> text "line_no" it <> ": "
+                        <> formatAmount 2 total <> keyText <> part
+              ]
+            covs =
+              [ Coverage (ruNo r) cid required covered previous unposted (ruAssignment r == "SERVICE_PERIOD")
+              | r <- collects "CONTRACT_SETTLEMENT"
+              , let mine = [(it, h) | it <- items, text "cost_category" it == ruSourceValue r, Just h <- [headOf it], itemTarget it /= Nothing]
+              , cid <- Set.toList (Set.fromList [text "contract_id" it | (it, _) <- mine])
+              , let hs = Map.elems (Map.fromList [(text "period_from" h, h) | (it, h) <- mine, text "contract_id" it == cid])
+                    covered =
+                      [ iv
+                      | h <- hs
+                      , isPosted h
+                      , Just iv <- [ if ruAssignment r == "SERVICE_PERIOD"
+                                       then hPeriod h >>= overlap period
+                                       else (\(d, _) -> (d, d)) <$> (dated r (day "posting_date" h) (day "settlement_date" h) >>= \dl -> if inPeriod (fst dl) then Just dl else Nothing)
+                                   ]
+                      ]
+                    previous = or [isPosted h && maybe False (isJust . overlap prev) (hPeriod h) | h <- hs]
+                    unposted =
+                      [ formatDay a <> "–" <> formatDay b <> " (" <> text "status" h <> ")"
+                      | h <- hs
+                      , text "status" h `elem` ["OPEN", "DRAFT"]
+                      , Just (a, b) <- [hPeriod h]
+                      , isJust (overlap period (a, b))
+                      ]
+              , Just required <- [maybe (Just period) (\c -> overlap period (cFrom c, cTo c)) (Map.lookup cid contractOf')]
+              , not (null covered) || previous || not (null unposted)
+              ]
+        pure (srcs, covs)
   -- Vorauszahlungen der Mieter im Zeitraum (anteilig)
   postings <- concatMap (maybe [] pure . posted) <$> readAll sys "ContractPosting" byCC
   let advances =
@@ -207,6 +263,7 @@ computeOpCostRun cache call p = do
             , opPersons = persons
             , opSources = ledgerSources <> invoiceSources <> settlementSources
             , opAdvances = advances
+            , opCoverage = coverage
             , opCategories = Map.fromList [(text "code" c, text "name" c) | c <- objects "categories" p]
             }
       checks = orChecks res
@@ -224,6 +281,7 @@ computeOpCostRun cache call p = do
   pure $
     object
       [ "summary" .= summaryText
+      , "failures" .= count Failure
       , "check_result" .= (checkSummary <> "\n" <> checkLines)
       , "message" .= ("Abrechnung gerechnet: " <> summaryText)
       , "journal"
@@ -263,19 +321,15 @@ computeOpCostRun cache call p = do
       _ -> bool "is_active" r
     textSuffix t = if T.null (T.strip t) then "" else " " <> T.strip t
 
--- | Anteil eines Betrags im Zeitraum: nach Leistungszeitraum (Tage), sonst
--- ganz, wenn das Buchungsdatum im Zeitraum liegt. Text: Zeitanteil.
-share :: (Day, Day) -> Integer -> Maybe Day -> Maybe Day -> Maybe Day -> Maybe (Integer, Text)
-share period total sf st posting = case (sf, st) of
-  (Just a, Just b) | a <= b -> do
-    iv <- overlap period (a, b)
-    let part
-          | iv == (a, b) = " (Leistung " <> formatDay a <> "–" <> formatDay b <> ")"
-          | otherwise = " × " <> tshow (days iv) <> " / " <> tshow (days (a, b)) <> " Tage (Leistung " <> formatDay a <> "–" <> formatDay b <> ")"
-    pure (prorate total (a, b) iv, part)
-  _ -> do
-    d <- posting
-    if d >= fst period && d <= snd period then Just (total, "") else Nothing
+-- | Anteil eines Betrags im Zeitraum nach Leistungs- bzw. Abrechnungszeitraum
+-- (Tage). Text: Zeitanteil.
+periodShare :: (Day, Day) -> Integer -> (Day, Day) -> Maybe (Integer, Text)
+periodShare period total (a, b) = do
+  iv <- overlap period (a, b)
+  let part
+        | iv == (a, b) = " (Leistung " <> formatDay a <> "–" <> formatDay b <> ")"
+        | otherwise = " × " <> tshow (days iv) <> " / " <> tshow (days (a, b)) <> " Tage (Leistung " <> formatDay a <> "–" <> formatDay b <> ")"
+  pure (prorate total (a, b) iv, part)
 
 objectField :: Text -> Record -> Maybe Record
 objectField k r = case KM.lookup (K.fromText k) r of
@@ -304,6 +358,7 @@ rule r = do
       , ruShare = fromMaybe 0 (textMaybe "share_pct" r >>= parseRate)
       , ruKey = text "allocation_key" r
       , ruTimeSplit = not (bool "vacancy_to_tenants" r)
+      , ruAssignment = fromMaybe (if text "source_type" r == "LEDGER" then "POSTING_DATE" else "SERVICE_PERIOD") (textMaybe "assignment" r)
       }
 
 allocKey :: Record -> AllocKey

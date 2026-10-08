@@ -34,6 +34,9 @@ module Billing.OpCost
   , Occupancy (..)
   , PersonSlice (..)
   , OpInput (..)
+  , Coverage (..)
+  , coverageChecks
+  , uncovered
   , Acc (..)
   , JLine (..)
   , TenantResult (..)
@@ -52,7 +55,7 @@ import Data.Maybe (listToMaybe)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time.Calendar (Day, diffDays)
+import Data.Time.Calendar (Day, addDays, diffDays)
 
 import Billing.Data (Measurement (..))
 import Billing.Plan (formatAmount, formatDay)
@@ -81,6 +84,7 @@ data Rule = Rule
   , ruShare :: Rational -- ^ Prozent
   , ruKey :: Text
   , ruTimeSplit :: Bool -- ^ Leerstand tagesgenau an den Eigentümer (sonst nur auf die Mieter)
+  , ruAssignment :: Text -- ^ Zuordnung der Quelle: SERVICE_PERIOD | POSTING_DATE | DOCUMENT_DATE
   }
   deriving stock (Show)
 
@@ -105,6 +109,8 @@ data Source = Source
   , soTarget :: Target
   , soFormula :: Text
   , soCategory :: Text
+  , soRule :: Integer -- ^ Sammelregel, die die Quelle geladen hat
+  , soWarning :: Maybe Text -- ^ z. B. ohne Leistungszeitraum nach Buchungsdatum zugeordnet
   }
   deriving stock (Show)
 
@@ -137,7 +143,23 @@ data OpInput = OpInput
   , opSources :: [Source]
   , opAdvances :: Map Text Integer -- ^ Vorauszahlungen je Vertrag (Cent)
   , opCategories :: Map Text Text -- ^ Kostenart → Bezeichnung (Ausweis beim Mieter)
+  , opCoverage :: [Coverage] -- ^ Vollständigkeit der Vertragsabrechnungen je Sammelregel und Vertrag
   }
+
+-- | Vollständigkeit einer Quelle Vertragsabrechnung: welcher Teil des
+-- Zeitraums (innerhalb der Vertragslaufzeit) durch gebuchte Abrechnungen
+-- abgedeckt ist, ob der Vertrag im Vorjahr abgerechnet wurde und welche
+-- Abrechnungen erfasst, aber nicht gebucht sind.
+data Coverage = Coverage
+  { cvRule :: Integer
+  , cvContract :: Text
+  , cvRequired :: (Day, Day)
+  , cvCovered :: [(Day, Day)]
+  , cvPrevious :: Bool
+  , cvUnposted :: [Text]
+  , cvGaps :: Bool -- ^ Lücken prüfen (Zuordnung nach Leistungszeitraum)
+  }
+  deriving stock (Show)
 
 data Acc = Q Text Text | S Text | O Text Text | M Text Text | E Text Text | R
   deriving stock (Eq, Ord, Show)
@@ -235,7 +257,7 @@ computeOpCost inp@OpInput {..} =
   OpResult
     { orJournal = journal
     , orTenants = tenants
-    , orChecks = reverse (stNotes final) <> endChecks
+    , orChecks = coverageChecks opCoverage <> reverse (stNotes final) <> endChecks
     , orSources = sourcesCents
     , orTenantTotal = sum (map trCosts tenants)
     , orOwnerTotal = ownerCents
@@ -320,14 +342,15 @@ collect OpInput {..} r st0
   | otherwise = foldl' (flip one) st0 mine
   where
     scale = dfScale opDef
-    mine = [s | s <- opSources, soType s == ruSourceType r, soValue s == ruSourceValue r]
+    mine = [s | s <- opSources, soRule s == ruNo r]
     pool = ruPool r
     one s =
       let to = case soTarget s of
             ToPool -> S pool
             ToObject o -> O o pool
             ToTenant c -> M c pool
-       in book (line r to (Q (soType s) (soValue s)) (soAmount s * scale) (soFormula s) (soRef s) (category r (soCategory s)))
+       in warn s . book (line r to (Q (soType s) (soValue s)) (soAmount s * scale) (soFormula s) (soRef s) (category r (soCategory s)))
+    warn s = maybe id (note Deviation (ruleName r)) (soWarning s)
 
 -- | Anteil aller Konten des Topfs in den Ziel-Topf (abgerundet).
 transfer :: OpInput -> Rule -> St -> St
@@ -451,6 +474,28 @@ roundingText def n rc
   | rc == 0 = "keine Rundung"
   | dfRounding def == "TENANTS_OR_OWNER" && n > 0 && rc >= toInteger n = tshow rc <> " Cent auf " <> tshow n <> " Mieter verteilt, Rest an den Eigentümer"
   | otherwise = tshow rc <> " Cent an den Eigentümer"
+
+-- | Prüfungen der Vollständigkeit (Fehler sperren die Freigabe, wenn das
+-- Regelwerk es nicht anders erlaubt).
+coverageChecks :: [Coverage] -> [Check]
+coverageChecks = concatMap one
+  where
+    one Coverage {..} =
+      let name = "Regel " <> tshow cvRule <> " Vertrag " <> cvContract
+          gaps = if cvGaps && not (null cvCovered) then uncovered cvRequired cvCovered else []
+       in [Check name Nothing Nothing Failure ("Abrechnung " <> u <> " erfasst, aber nicht gebucht") | u <- cvUnposted]
+            <> [Check name Nothing Nothing Failure "im Vorjahr abgerechnet – für den Zeitraum fehlt die Abrechnung" | null cvCovered, cvPrevious]
+            <> [Check name Nothing Nothing Failure ("nicht abgerechnet: " <> formatDay a <> "–" <> formatDay b) | (a, b) <- gaps]
+            <> [Check name Nothing Nothing Ok "Zeitraum vollständig abgerechnet" | not (null cvCovered), null gaps, null cvUnposted]
+
+-- | Teile von [a, b], die keiner der Zeiträume abdeckt.
+uncovered :: (Day, Day) -> [(Day, Day)] -> [(Day, Day)]
+uncovered (a, b) ivs = go a (sortOn fst [iv | Just iv <- map (overlap (a, b)) ivs])
+  where
+    go s [] = [(s, b) | s <= b]
+    go s ((c, d) : xs)
+      | c > s = (s, addDays (-1) c) : go (max s (addDays 1 d)) xs
+      | otherwise = go (max s (addDays 1 d)) xs
 
 -- --- Hilfen -----------------------------------------------------------------------
 

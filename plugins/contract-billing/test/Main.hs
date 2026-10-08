@@ -400,7 +400,7 @@ opCostTests check = do
   let d = fromGregorian
       y = (d 2025 1 1, d 2025 12 31)
       rule no step kind src val pool cat key =
-        Rule no step "" kind cat src val pool "" 0 key True
+        Rule no step "" kind cat src val pool "" 0 key True "SERVICE_PERIOD"
       rules =
         [ rule 10 1 "COLLECT" "LEDGER" "6300" "WASSER" "Wasser" ""
         , rule 20 1 "COLLECT" "INVOICE" "GRUNDSTEUER" "GRST" "Grundsteuer" ""
@@ -425,12 +425,13 @@ opCostTests check = do
           , opOccupancy = [Occupancy "MV1" "P1" "W1" (d 2025 1 1) (d 2025 12 31), Occupancy "MV2" "P2" "W2" (d 2025 7 1) (d 2025 12 31)]
           , opPersons = [PersonSlice "MV1" 2 (d 2024 1 1) openEnd, PersonSlice "MV2" 1 (d 2025 7 1) openEnd]
           , opSources =
-              [ Source "LEDGER" "6300" "JE:1" 100000 ToPool "" ""
-              , Source "INVOICE" "GRUNDSTEUER" "INV:1" 30000 (ToObject "W1") "" ""
-              , Source "INVOICE" "MESSDIENST" "INV:2" 2500 (ToTenant "MV2") "" ""
+              [ Source "LEDGER" "6300" "JE:1" 100000 ToPool "" "" 10 Nothing
+              , Source "INVOICE" "GRUNDSTEUER" "INV:1" 30000 (ToObject "W1") "" "" 20 Nothing
+              , Source "INVOICE" "MESSDIENST" "INV:2" 2500 (ToTenant "MV2") "" "" 30 (Just "Rechnung 2 ohne Leistungszeitraum")
               ]
           , opAdvances = Map.fromList [("MV1", 120000)]
           , opCategories = Map.fromList [("Wasser", "Wasserversorgung")]
+          , opCoverage = []
           }
       res = computeOpCost inp
       tenant c = [(trCosts t, trAdvances t, trLines t) | t <- orTenants res, trContract t == c]
@@ -442,7 +443,7 @@ opCostTests check = do
   check "NK: MV2" [(22641, 0, [("Abwasser", 6049), ("Heizung", 2500), ("Rundung", 1), ("Wasserversorgung", 14091)])] (tenant "MV2")
   check "NK: Eigentümer (Leerstand W2)" 5950 (orOwnerTotal res)
   check "NK: Rundung" 2 (orRounding res)
-  check "NK: Prüfungen ohne Fehler" [] [chName c | c <- orChecks res, chLevel c `elem` [Failure, Deviation]]
+  check "NK: Hinweis ohne Leistungszeitraum" ["Regel 30"] [chName c | c <- orChecks res, chLevel c `elem` [Failure, Deviation]]
   check "NK: Journal ausgeglichen" True (all ((> 0) . jAmount) (orJournal res))
   -- Rest < Anzahl Mieter → Eigentümer; ohne Verteilregel bleibt der Topf offen
   let one = computeOpCost inp {opRules = take 1 rules <> [rule 50 3 "DISTRIBUTE" "" "" "WASSER" "Wasser" "WFL"], opSources = take 1 (opSources inp)}
@@ -454,3 +455,16 @@ opCostTests check = do
   let open' = computeOpCost inp {opRules = take 3 rules}
   check "NK: Töpfe offen" ["Offen O:W1:GRST", "Offen S:WASSER"] (sort [chName c | c <- orChecks open', chLevel c == Failure])
   check "NK: Summe weicht ab" [Deviation] [chLevel c | c <- orChecks open', chName c == "Summe"]
+
+  -- Vollständigkeit der Vertragsabrechnungen
+  check "Lücken" [(d 2025 1 1, d 2025 5 31), (d 2025 11 1, d 2025 12 31)] (uncovered y [(d 2025 6 1, d 2025 10 31)])
+  check "keine Lücke" [] (uncovered y [(d 2024 6 1, d 2025 5 31), (d 2025 6 1, d 2026 5 31)])
+  let cov = Coverage 10 "VE-1" y
+      levels cs = [(chLevel c, chText c) | c <- coverageChecks cs]
+  check "vollständig" [(Ok, "Zeitraum vollständig abgerechnet")] (levels [cov [y] True [] True])
+  check "fehlt (Vorjahr abgerechnet)" [(Failure, "im Vorjahr abgerechnet – für den Zeitraum fehlt die Abrechnung")] (levels [cov [] True [] True])
+  check "erfasst, nicht gebucht" [Failure] (map fst (levels [cov [] False ["01.01.2025–31.12.2025 (OPEN)"] True]))
+  check "Teilzeitraum" [(Failure, "nicht abgerechnet: 01.06.2025–31.12.2025")] (levels [cov [(d 2025 1 1, d 2025 5 31)] True [] True])
+  check "nach Datum ohne Lückenprüfung" [Ok] (map fst (levels [cov [(d 2025 3 1, d 2025 3 1)] True [] False]))
+  let withCov = computeOpCost inp {opCoverage = [cov [] True [] True]}
+  check "NK: Fehler aus Vollständigkeit" 1 (length [() | c <- orChecks withCov, chLevel c == Failure])
