@@ -6,6 +6,7 @@
 -- | ContractBilling.loanSchedule | company_code, contract_id | Tilgungsplan (message, table) |
 -- | ContractBilling.checkSettlement | company_code, contract_id, period_from, advance_types, tolerance | Prüfungen (message, table) |
 -- | ContractBilling.postSettlement | wie checkSettlement | prüfen, vorerfassen, ggf. buchen, vermerken |
+-- | ContractBilling.computeOpCost | company_code, definition, rules, keys, categories, period_from, period_to | Nebenkostenabrechnung: Journal, Ergebnis je Mieter, Prüfungen |
 -- | ContractBilling.refresh | – | Cache des Mandanten verwerfen |
 -- | ContractBilling.cache | – | Zustand des Caches (Diagnose) |
 -- | ContractBillingCache.onEvent | SystemEvent | betroffenen Ausschnitt verwerfen |
@@ -28,6 +29,7 @@ import Text.Read (readMaybe)
 
 import Billing.Cache
 import Billing.Data
+import Billing.OpCostRun
 import Billing.Run
 import CoreMesh.Plugin
 
@@ -36,11 +38,11 @@ callbackObject = "ContractBillingCache"
 
 billingPlugin :: Cache -> Plugin
 billingPlugin cache =
-  (defaultPlugin "contract-billing" "0.6.0")
+  (defaultPlugin "contract-billing" "0.7.0")
     { pluginDescription = "Vertragsbuchung: Sollstellung der Verträge über die Vorerfassung des Hauptbuchs"
     , pluginCapabilities =
-        [ Capability "ContractBilling" ["run", "loanSchedule", "checkSettlement", "postSettlement", "refresh", "cache"] []
-            "Sollstellung der Verträge rechnen und buchen, Tilgungspläne, Vertragsabrechnungen prüfen und buchen"
+        [ Capability "ContractBilling" ["run", "loanSchedule", "checkSettlement", "postSettlement", "computeOpCost", "refresh", "cache"] []
+            "Sollstellung der Verträge rechnen und buchen, Tilgungspläne, Vertragsabrechnungen prüfen und buchen, Nebenkostenabrechnung rechnen"
         , Capability callbackObject ["onEvent"] [] "Änderungen an Stammdaten (SystemEvent)"
         ]
     , pluginConfigure = \call settings -> do
@@ -96,6 +98,7 @@ handler cache call req = case (reqObject req, reqAction req) of
           _ -> []
         req' = SettlementRequest cc cid from advance (maybe "0" id (textMaybe "tolerance" p))
     response <$> (if a == "checkSettlement" then settlementCheck else settlementPost) cache call req'
+  ("ContractBilling", "computeOpCost") -> response <$> computeOpCostRun cache call p
   ("ContractBilling", "refresh") -> do
     clearTenant cache (callTenantId call)
     pure (response (object ["message" .= ("Kopie der Stammdaten verworfen; der nächste Lauf lädt neu" :: Text)]))

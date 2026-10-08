@@ -12,6 +12,7 @@ import System.Exit (exitFailure)
 
 import Billing.Data
 import Billing.Loan
+import Billing.OpCost
 import Billing.Plan
 import Billing.Schedule
 import Billing.Settlement
@@ -97,6 +98,7 @@ main = do
   planTests check
   loanTests check
   settlementTests check
+  opCostTests check
 
   n <- readIORef failures
   if n == 0 then putStrLn "alle Tests bestanden" else exitFailure
@@ -390,3 +392,65 @@ settlementTests check = do
       check "Nachzahlung Haben Kreditor" [("2900", "H", 107797)] [(plAccount l, plSide l, plAmount l) | l <- ls, plPartner l]
   check "Entnahme ohne Gegenkonto" (Left "Entnahme aus der Rücklage: Gegenkonto fehlt")
     (either Left (const (Right ())) (settlementLines "A" h {shReserveWithdrawal = 1} items [] "2900"))
+
+-- | Nebenkostenabrechnung: Sammeln mit Kontierung, Umbuchen, Verteilen nach
+-- Personentagen und Wohnfläche, Leerstand, Rundung auf die Mieter.
+opCostTests :: (forall a. (Eq a, Show a) => String -> a -> a -> IO ()) -> IO ()
+opCostTests check = do
+  let d = fromGregorian
+      y = (d 2025 1 1, d 2025 12 31)
+      rule no step kind src val pool cat key =
+        Rule no step "" kind cat src val pool "" 0 key True
+      rules =
+        [ rule 10 1 "COLLECT" "LEDGER" "6300" "WASSER" "Wasser" ""
+        , rule 20 1 "COLLECT" "INVOICE" "GRUNDSTEUER" "GRST" "Grundsteuer" ""
+        , rule 30 1 "COLLECT" "INVOICE" "MESSDIENST" "HEIZ" "Heizung" ""
+        , (rule 40 2 "TRANSFER" "" "" "WASSER" "" "") {ruToPool = "ABW", ruShare = 30}
+        , rule 50 3 "DISTRIBUTE" "" "" "WASSER" "Wasser" "PERS"
+        , rule 60 3 "DISTRIBUTE" "" "" "ABW" "Abwasser" "WFL"
+        , rule 70 3 "DISTRIBUTE" "" "" "GRST" "Grundsteuer" "DIREKT"
+        ]
+      keys =
+        Map.fromList
+          [ (akCode k, k)
+          | k <- [AllocKey "PERS" "Personen" "PERSONS" Nothing, AllocKey "WFL" "Wohnfläche" "MEASUREMENT" (Just "WFL"), AllocKey "DIREKT" "direkt" "DIRECT" Nothing]
+          ]
+      inp =
+        OpInput
+          { opDef = Def "WE1" 100000 "TENANTS_OR_OWNER" (fst y) (snd y)
+          , opRules = rules
+          , opKeys = keys
+          , opObjects = ["W1", "W2"]
+          , opMeasurements = [Measurement "W1" "WFL" 60 (d 2020 1 1) openEnd, Measurement "W2" "WFL" 40 (d 2020 1 1) openEnd]
+          , opOccupancy = [Occupancy "MV1" "P1" "W1" (d 2025 1 1) (d 2025 12 31), Occupancy "MV2" "P2" "W2" (d 2025 7 1) (d 2025 12 31)]
+          , opPersons = [PersonSlice "MV1" 2 (d 2024 1 1) openEnd, PersonSlice "MV2" 1 (d 2025 7 1) openEnd]
+          , opSources =
+              [ Source "LEDGER" "6300" "JE:1" 100000 ToPool "" ""
+              , Source "INVOICE" "GRUNDSTEUER" "INV:1" 30000 (ToObject "W1") "" ""
+              , Source "INVOICE" "MESSDIENST" "INV:2" 2500 (ToTenant "MV2") "" ""
+              ]
+          , opAdvances = Map.fromList [("MV1", 120000)]
+          , opCategories = Map.fromList [("Wasser", "Wasserversorgung")]
+          }
+      res = computeOpCost inp
+      tenant c = [(trCosts t, trAdvances t, trLines t) | t <- orTenants res, trContract t == c]
+  check "NK: Summe der Quellen" 132500 (orSources res)
+  -- Wasser 700,00 nach Personentagen 730/914 bzw. 184/914, Abwasser 300,00 nach Wohnfläche 60/40,
+  -- W2 zu 184/365 an MV2, 181/365 Leerstand; Rundung 2 Cent: je Mieter 1 Cent
+  check "NK: Mietobjekt MV2" ["W2"] [trObject t | t <- orTenants res, trContract t == "MV2"]
+  check "NK: MV1" [(103909, 120000, [("Abwasser", 18000), ("Grundsteuer", 30000), ("Rundung", 1), ("Wasserversorgung", 55908)])] (tenant "MV1")
+  check "NK: MV2" [(22641, 0, [("Abwasser", 6049), ("Heizung", 2500), ("Rundung", 1), ("Wasserversorgung", 14091)])] (tenant "MV2")
+  check "NK: Eigentümer (Leerstand W2)" 5950 (orOwnerTotal res)
+  check "NK: Rundung" 2 (orRounding res)
+  check "NK: Prüfungen ohne Fehler" [] [chName c | c <- orChecks res, chLevel c `elem` [Failure, Deviation]]
+  check "NK: Journal ausgeglichen" True (all ((> 0) . jAmount) (orJournal res))
+  -- Rest < Anzahl Mieter → Eigentümer; ohne Verteilregel bleibt der Topf offen
+  let one = computeOpCost inp {opRules = take 1 rules <> [rule 50 3 "DISTRIBUTE" "" "" "WASSER" "Wasser" "WFL"], opSources = take 1 (opSources inp)}
+  check "NK: Wasser nach WFL, W2 mit Leerstand" [60000] [trCosts t | t <- orTenants one, trContract t == "MV1"]
+  -- W2: 400,00 × 184/365 = 201,64… an MV2, Leerstand 198,35…; 1 Cent Rest < 2 Mieter → Eigentümer
+  check "NK: Rundung 1 Cent" 1 (orRounding one)
+  check "NK: Rest an den Eigentümer" (19835 + 1) (orOwnerTotal one)
+  check "NK: MV2 zeitanteilig" [20164] [trCosts t | t <- orTenants one, trContract t == "MV2"]
+  let open' = computeOpCost inp {opRules = take 3 rules}
+  check "NK: Töpfe offen" ["Offen O:W1:GRST", "Offen S:WASSER"] (sort [chName c | c <- orChecks open', chLevel c == Failure])
+  check "NK: Summe weicht ab" [Deviation] [chLevel c | c <- orChecks open', chName c == "Summe"]

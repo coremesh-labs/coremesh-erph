@@ -21,6 +21,7 @@ module Billing.Data
   , contractObject
   , measurement
   , account
+  , shortAccount
   , posted
   , partnerAccount
   , loanTerms

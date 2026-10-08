@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.6.0 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.7.0 |
 
 ## Bauen, testen, starten
 
@@ -148,6 +148,17 @@ Haben, Entnahme aus der Rücklage, Differenz an das Partnerkonto) und Buchung ü
 Vorerfassung in einer Transaktion; der Vermerk geht an `ContractPostingService.recordSettlement`.
 Die Vorauszahlungs-Konditionsarten und die Toleranz gibt das Vertragsmodul mit.
 
+### Nebenkostenabrechnung
+
+`ContractBilling.computeOpCost` (`Billing.OpCost` rein, `Billing.OpCostRun` lädt): Regelwerk,
+Regeln und Schlüssel schickt das Modul Betriebskosten (`opcost`), es speichert auch Journal und
+Ergebnis. Geladen werden die Mietobjekte der Einheit, die Nutzung durch Mietverträge der
+Mietervertragsarten (Vertrags- und Objektzeitraum), Personen-Zeitscheiben, Bemessungen, die
+Quellen (Einzelposten, gebuchte Eingangsrechnungen, gebuchte Vertragsabrechnungen) und die
+Vorauszahlungen (`ContractPosting`, anteilig). Gerechnet wird ganzzahlig in Cent × Faktor auf
+internen Konten (Sammeln, Umbuchen, Verteilen, Zeitanteile, Rundung); jede Buchung trägt ihre
+Formel. Prüfungen: liegengebliebene Töpfe, Summe der Quellen = Mieter + Eigentümer, Rundung.
+
 ### Nachberechnung
 
 Jeder Lauf rechnet auch die schon vermerkten Perioden neu und vergleicht je Vertrag,
@@ -201,19 +212,23 @@ gebucht):
 |---|---|
 | `Billing.Schedule` | Perioden, anteilige Beträge, Fälligkeitstage, Einmalzahlungen und Raten (rein) |
 | `Billing.Settlement` | Vertragsabrechnung: Prüfungen und Buchungsplan (rein) |
+| `Billing.OpCost` | Nebenkostenabrechnung: Abrechnungskonten, Regeln, Verteilung, Rundung, Prüfungen (rein) |
+| `Billing.OpCostRun` | Nebenkostenabrechnung: Einheit, Mieter, Quellen und Vorauszahlungen laden |
 | `Billing.Loan` | Tilgungsplan: Zinsmethoden, Annuität, Ratentilgung, endfällig, Sondertilgung, Zinswechsel (rein) |
 | `Billing.Plan` | Belege aus Verträgen, Konditionen, Objekten, Konten, Feldstatus und dem Vermerkten; Nachberechnung (rein) |
 | `Billing.Cache` | Kopie der Stammdaten, Ungültig per Event, Haltezeit |
 | `Billing.Data` | Datensätze aus den Datenströmen der anderen Plugins |
 | `Billing.Run` | Lauf: Rechte, planen, je Beleg Vorerfassung, Prüfen, Buchen, Vermerk (`inTx` + `dispatch`) |
-| `Billing.Api` | Objects `ContractBilling` (run, refresh, cache) und `ContractBillingCache` (onEvent) |
+| `Billing.Api` | Objects `ContractBilling` (run, loanSchedule, checkSettlement, postSettlement, computeOpCost, refresh, cache) und `ContractBillingCache` (onEvent) |
 
 Tests (`cabal test contract-billing:test:spec`): Fälligkeiten (Teilperioden, Anpassung,
 Kündigung, Zahlung am 15., Quartal nachschüssig, Monatsende, einmalig mit Fälligkeitsdatum,
 Rundung), Belegplanung (Richtung, Kontierung je Feldstatus, Minderung, fehlendes Abstimmkonto,
 bereits Vermerktes, Überschneidung) und Nachberechnung (Minderung, Erhöhung ab Monatsmitte,
 nachträgliche Kondition, Einmalzahlung, rückwirkendes Ende, entfallene Kondition, verschobener
-Fälligkeitstag, alte Vermerke, Belegart nach Saldo).
+Fälligkeitstag, alte Vermerke, Belegart nach Saldo), Nebenkostenabrechnung (Personentage,
+Wohnfläche mit Leerstand, Umbuchen, direkte Kontierung, Rundung an Mieter bzw. Eigentümer,
+liegengebliebene Töpfe).
 
 Seit 0.2.0 liegen die eigenen Tabellen `contract_billing__*` von 0.1.0 leer in der Datenbank
 (dbschema löscht keine Tabellen).
@@ -224,4 +239,4 @@ Seit 0.2.0 liegen die eigenen Tabellen `contract_billing__*` von 0.1.0 leer in d
 - Steuerkennzeichen der Konditionsart (Gewerbemiete mit Umsatzsteuer).
 - Minderung in Prozent einer anderen Kondition (heute: fester Betrag).
 - Stornos im Hauptbuch berücksichtigen (ein stornierter Sollstellungsbeleg gilt noch als vermerkt).
-- Nebenkostenabrechnung aus den Vorauszahlungen.
+- Nebenkostenabrechnung: Schlüssel Verbrauch (Zähler), Mieterschreiben.
