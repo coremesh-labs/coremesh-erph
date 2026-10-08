@@ -10,6 +10,8 @@ module Billing.Data
   , ContractObject (..)
   , Measurement (..)
   , Account (..)
+  , Posted (..)
+  , PostingKind (..)
   , FieldStatus
   , contractType
   , contract
@@ -17,6 +19,7 @@ module Billing.Data
   , contractObject
   , measurement
   , account
+  , posted
   , fieldStatus
   , text
   , textMaybe
@@ -94,6 +97,7 @@ data ContractType = ContractType
   , ctDirection :: Text -- ^ RECEIVABLE | PAYABLE
   , ctReconciliation :: Maybe Text -- ^ Abstimmkonto (Debitor bzw. Kreditor)
   , ctDocumentType :: Maybe Text -- ^ Belegart der Sollstellung
+  , ctCreditDocumentType :: Maybe Text -- ^ Belegart, wenn der Beleg per Saldo eine Gutschrift ist
   , ctAutoPost :: Bool -- ^ geprüfte Vorerfassung gleich buchen (sonst offen lassen)
   }
   deriving stock (Show)
@@ -120,6 +124,7 @@ data Condition = Condition
   , kMeasurement :: Maybe Text
   , kFrequency :: Frequency
   , kDueDay :: Int
+  , kDueDate :: Maybe Day -- ^ nur einmalig: Fälligkeit (leer = Beginn)
   , kMode :: PaymentMode
   , kAccount :: Maybe Text
   , kPayer :: Maybe Text
@@ -155,6 +160,47 @@ data Account = Account
   }
   deriving stock (Show)
 
+-- | Erste Sollstellung zur Fälligkeit oder Nachberechnung zum Lauf.
+data PostingKind = Original | Correction
+  deriving stock (Eq, Show)
+
+-- | Ein vermerkter Teil einer Sollstellung (ContractPosting).
+data Posted = Posted
+  { pContract :: Text
+  , pType :: Text
+  , pObject :: Text
+  , pFrom :: Day -- ^ abgedeckt von (Nachberechnung: Beginn der Periode)
+  , pTo :: Day
+  , pPeriod :: Maybe Day -- ^ Beginn der Kalenderperiode; leer bei Vermerken vor 0.4.0
+  , pDue :: Day
+  , pAmount :: Integer
+  , pKind :: PostingKind
+  , pAccount :: Text
+  , pRentObject :: Maybe Text
+  }
+  deriving stock (Show)
+
+posted :: Record -> Maybe Posted
+posted r = do
+  from <- day "period_from" r
+  to <- day "period_to" r
+  due <- day "due_date" r
+  amount <- int "amount" r
+  pure
+    Posted
+      { pContract = text "contract_id" r
+      , pType = text "condition_type" r
+      , pObject = text "object_id" r
+      , pFrom = from
+      , pTo = to
+      , pPeriod = day "billing_period" r
+      , pDue = due
+      , pAmount = amount
+      , pKind = if text "kind" r == "CORRECTION" then Correction else Original
+      , pAccount = text "account_number" r
+      , pRentObject = textMaybe "rent_object_id" r
+      }
+
 -- | Feldstatus: (Gruppe, Feld) → SUPPRESS | OPTIONAL | REQUIRED; fehlt = ausgeblendet.
 type FieldStatus = Map (Text, Text) Text
 
@@ -163,7 +209,14 @@ until' k r = maybe openEnd id (day k r)
 
 contractType :: Record -> ContractType
 contractType r =
-  ContractType (text "code" r) (text "direction" r) (textMaybe "reconciliation_account" r) (textMaybe "posting_document_type" r) (bool "auto_post" r)
+  ContractType
+    { ctCode = text "code" r
+    , ctDirection = text "direction" r
+    , ctReconciliation = textMaybe "reconciliation_account" r
+    , ctDocumentType = textMaybe "posting_document_type" r
+    , ctCreditDocumentType = textMaybe "credit_document_type" r
+    , ctAutoPost = bool "auto_post" r
+    }
 
 contract :: Record -> Maybe Contract
 contract r = do
@@ -203,6 +256,7 @@ condition r = do
       , kMeasurement = textMaybe "measurement_type" r
       , kFrequency = freq
       , kDueDay = maybe 1 fromInteger (int "due_day" r)
+      , kDueDate = day "due_date" r
       , kMode = mode
       , kAccount = textMaybe "account_number" r
       , kPayer = textMaybe "payer_id" r

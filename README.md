@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.2.0 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.3.0 |
 
 ## Bauen, testen, starten
 
@@ -59,7 +59,8 @@ Eintrag in `configs/`. `build.sh` findet es über die `.cabal`-Datei.
 
 Rechnet die fälligen Konditionen der Verträge (Plugin `contract`) und bucht sie im Hauptbuch
 (Plugin `ledger`) – wie eine manuelle Buchung über die **Vorerfassung**. Je Vertrag und
-Fälligkeitstag entsteht ein Beleg.
+Buchungsdatum entsteht ein Beleg. Schon Gebuchtes wird nachberechnet, wenn sich die Verträge
+rückwirkend ändern.
 
 **Aufgabenteilung:** Haskell rechnet und bucht, Go hält die Daten und stellt die Oberfläche.
 Das Plugin hat **keine eigenen Tabellen und kein SQL**; es spricht nur über Objects und Actions
@@ -71,8 +72,10 @@ mit dem System:
 | contract-billing (Haskell) | Fälligkeiten und Belege rechnen, Vorerfassung anlegen, prüfen, ggf. buchen; Kopie der Stammdaten im Speicher |
 
 **Oberfläche** (Modul Verträge → Buchung): „Buchungslauf …“ bucht im Buchungskreis alles, was
-bis zum Stichtag fällig und noch nicht vermerkt ist; „Vorschau …“ plant nur; „Buchen …“ am
-Vertrag für einen Vertrag. Konsole:
+bis zum Stichtag fällig und noch nicht vermerkt ist, und die Nachberechnungen; „Vorschau …“
+plant nur; „Buchen …“ am Vertrag für einen Vertrag. „Buchen bis“ ist mit heute vorbelegt, das
+Formular zeigt den letzten Lauf. Der Lauf merkt sich kein Datum, sondern je Fälligkeit, ob sie
+vermerkt ist – ausgelassene Läufe holt der nächste mit den ursprünglichen Fälligkeiten nach. Konsole:
 `console --object ContractBilling --action run --param company_code='"1000"' --param to_date=2026-10-31 --param simulate=true`.
 
 ### Ablauf je Beleg
@@ -111,14 +114,41 @@ vor jedem Lauf die offenen Vorerfassungen ab (Events gehen höchstens einmal zu)
 
 | Regel | Inhalt |
 |---|---|
-| Perioden | Kalendermonat, Quartal (Jan/Apr/Jul/Okt), Halbjahr, Jahr; einmalig = Beginn der Kondition |
+| Perioden | Kalendermonat, Quartal (Jan/Apr/Jul/Okt), Halbjahr, Jahr; Beginn zur Monatsmitte = anteiliger erster Monat, keine eigenen Perioden |
+| einmalig | ein Betrag (z. B. Bereitstellungsgebühr), fällig am Fälligkeitsdatum der Kondition, leer = Beginn |
 | Teilperioden | Deckt die Kondition nur einen Teil ab (Beginn am 15., Anpassung, Kündigung), ist der Betrag tagesgenau anteilig, kaufmännisch gerundet |
 | vorschüssig | fällig am Fälligkeitstag im ersten Monat der Periode, nicht vor Beginn des abgedeckten Teils |
 | nachschüssig | fällig am Fälligkeitstag im Monat nach dem Ende der Periode |
-| Fälligkeitstag | über dem Monatsende: letzter Tag des Monats |
+| Fälligkeitstag | z. B. der 15., wenn der Mieter zur Monatsmitte zahlt; über dem Monatsende: letzter Tag des Monats |
 | je Einheit | Preis × Bemessung des Objekts am Beginn des abgedeckten Teils (realestate `Measurement`) |
 | Zeitraum | Kondition ∩ Vertragslaufzeit; Verträge im Status aktiv oder gekündigt |
 | Überschneidung | Zeitscheiben einer Kondition überschneiden sich: Meldung, der Vertrag wird nicht gebucht |
+
+### Nachberechnung
+
+Jeder Lauf rechnet auch die schon vermerkten Perioden neu und vergleicht je Vertrag,
+Konditionsart, Objekt und **Kalenderperiode** mit der Summe des Vermerkten (vorerfasst oder
+gebucht):
+
+| Fall | Ergebnis |
+|---|---|
+| Betrag rückwirkend geändert (Korrektur, Mieterhöhung, auch ab Monatsmitte) | Differenz je Periode |
+| Minderung wegen Mängeln, nachträglich als Kondition mit negativem Betrag erfasst (z. B. `MM`) | Gutschrift für die schon gebuchten Monate |
+| Vertrag rückwirkend beendet, Kondition entfallen | Gutschrift des Vermerkten (Konto aus dem Vermerk) |
+| Neue Kondition für eine Zeit, die schon abgerechnet und fällig ist | Nachberechnung statt Sollstellung zur alten Fälligkeit |
+| Neue Kondition, die erst künftig fällig ist | Sollstellung zur Fälligkeit |
+| nur der Fälligkeitstag geändert | nichts |
+
+- **Buchungsdatum** der Nachberechnung ist der Tag des Laufs (höchstens der Stichtag) – die alten
+  Perioden sind oft schon gesperrt. Positionstext „Nachberechnung KM 9/2026“, Kopf
+  „Nachberechnung <Vertrag> <Datum>“.
+- Vermerkt wird sie als weitere Zeile zum selben Schlüssel (laufende Nummer 1, 2 …, Art
+  „Nachberechnung“), so dass Vermerktes und Gerechnetes danach wieder übereinstimmen: Ein zweiter
+  Lauf findet nichts mehr.
+- Konditionen mit Fehlern (Sachkonto, Bemessung) werden nicht nachberechnet; Überschneidungen
+  sperren den Vertrag wie bisher.
+- Vermerke von Version 0.2.0 haben keine Kalenderperiode; sie wird aus dem Rhythmus der Kondition
+  abgeleitet.
 
 ### Belege
 
@@ -128,8 +158,9 @@ vor jedem Lauf die offenen Vorerfassungen ab (Events gehen höchstens einmal zu)
 | Verbindlichkeit („wir zahlen“) | Sachkonto der Kondition | Abstimmkonto (Kreditor) |
 
 - **Einstellungen** an der Vertragsart (Gruppe „Buchung“): Abstimmkonto (Pflicht), Belegart
-  (leer = DR bzw. KR), automatisch buchen.
-- **Negative Beträge** (Minderungen) tauschen Soll und Haben.
+  (leer = DR bzw. KR), Belegart für Gutschriften (leer = DG bzw. KG), automatisch buchen.
+- **Negative Beträge** (Minderungen, Gutschriften) tauschen Soll und Haben; ist der Beleg per
+  Saldo negativ, bekommt er die Gutschrift-Belegart.
 - **Kontierungen:** Vertrag, Mietobjekt (Objekt der Kondition, sonst Hauptobjekt – nur
   Mietobjekte), Debitor bzw. Kreditor (abweichender Zahler, sonst Vertragspartner) – nur, was
   die **Feldstatusgruppe** des Kontos zulässt; Pflichtfelder prüft der Ledger.
@@ -140,16 +171,19 @@ vor jedem Lauf die offenen Vorerfassungen ab (Events gehen höchstens einmal zu)
 
 | Modul | Inhalt |
 |---|---|
-| `Billing.Schedule` | Perioden, anteilige Beträge, Fälligkeitstage (rein) |
-| `Billing.Plan` | Belege aus Verträgen, Konditionen, Objekten, Konten und Feldstatus (rein) |
+| `Billing.Schedule` | Perioden, anteilige Beträge, Fälligkeitstage, Einmalzahlungen (rein) |
+| `Billing.Plan` | Belege aus Verträgen, Konditionen, Objekten, Konten, Feldstatus und dem Vermerkten; Nachberechnung (rein) |
 | `Billing.Cache` | Kopie der Stammdaten, Ungültig per Event, Haltezeit |
 | `Billing.Data` | Datensätze aus den Datenströmen der anderen Plugins |
 | `Billing.Run` | Lauf: Rechte, planen, je Beleg Vorerfassung, Prüfen, Buchen, Vermerk (`inTx` + `dispatch`) |
 | `Billing.Api` | Objects `ContractBilling` (run, refresh, cache) und `ContractBillingCache` (onEvent) |
 
-Tests (`cabal test contract-billing`): Fälligkeiten (Teilperioden, Anpassung, Kündigung,
-Quartal nachschüssig, Monatsende, einmalig, Rundung) und Belegplanung (Richtung, Kontierung je
-Feldstatus, Minderung, fehlendes Abstimmkonto, bereits Vermerktes, Überschneidung).
+Tests (`cabal test contract-billing:test:spec`): Fälligkeiten (Teilperioden, Anpassung,
+Kündigung, Zahlung am 15., Quartal nachschüssig, Monatsende, einmalig mit Fälligkeitsdatum,
+Rundung), Belegplanung (Richtung, Kontierung je Feldstatus, Minderung, fehlendes Abstimmkonto,
+bereits Vermerktes, Überschneidung) und Nachberechnung (Minderung, Erhöhung ab Monatsmitte,
+nachträgliche Kondition, Einmalzahlung, rückwirkendes Ende, entfallene Kondition, verschobener
+Fälligkeitstag, alte Vermerke, Belegart nach Saldo).
 
 Seit 0.2.0 liegen die eigenen Tabellen `contract_billing__*` von 0.1.0 leer in der Datenbank
 (dbschema löscht keine Tabellen).
@@ -158,4 +192,6 @@ Seit 0.2.0 liegen die eigenen Tabellen `contract_billing__*` von 0.1.0 leer in d
 
 - Zahlungseingänge und Ausgleich der offenen Posten (Debitor), Mahnung.
 - Steuerkennzeichen der Konditionsart (Gewerbemiete mit Umsatzsteuer).
+- Minderung in Prozent einer anderen Kondition (heute: fester Betrag).
+- Stornos im Hauptbuch berücksichtigen (ein stornierter Sollstellungsbeleg gilt noch als vermerkt).
 - Nebenkostenabrechnung aus den Vorauszahlungen.

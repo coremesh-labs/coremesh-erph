@@ -2,7 +2,8 @@
 -- Reine Funktionen ohne Ein-/Ausgabe.
 --
 --   * Perioden sind Kalenderperioden: Monat, Quartal (ab Jan/Apr/Jul/Okt),
---     Halbjahr (ab Jan/Jul), Jahr. Einmalig: ein Tag, der Beginn der Kondition.
+--     Halbjahr (ab Jan/Jul), Jahr. Einmalig: ein Tag, der Beginn der Kondition;
+--     fällig am Beginn oder an einem eigenen Fälligkeitsdatum ("dueOnce").
 --   * Deckt die Kondition nur einen Teil einer Periode ab (Beginn am 15.,
 --     Anpassung mitten im Monat, Kündigung), ist der Betrag tagesgenau anteilig
 --     und kaufmännisch gerundet.
@@ -15,6 +16,7 @@ module Billing.Schedule
   , PaymentMode (..)
   , Due (..)
   , dues
+  , dueOnce
   , periodOf
   , prorate
   , roundDiv
@@ -99,3 +101,12 @@ dues f mode dueDay amountAt from to horizon = go (fst (periodOf f from))
           InArrears ->
             let (y, m, _) = toGregorian (addDays 1 pe)
              in dayInMonth y m dueDay
+
+-- | Einmalige Kondition: ein Betrag für den Beginn, fällig am eigenen
+-- Fälligkeitsdatum (nicht vor dem Beginn) bzw. am Beginn.
+dueOnce :: Maybe Day -> (Day -> Integer) -> Day -> Day -> Day -> [Due]
+dueOnce dueOn amountAt from to horizon
+  | from <= to && date <= horizon = [Due from from from from date (amountAt from)]
+  | otherwise = []
+  where
+    date = maybe from (max from) dueOn

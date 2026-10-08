@@ -1,10 +1,11 @@
 -- | Ein Buchungslauf – ohne SQL, nur über Objects und Actions:
 --
 --   1. Stammdaten aus dem Cache ("Billing.Cache"), die schon vermerkten
---      Fälligkeiten frisch aus ContractPosting (Datenstrom).
+--      Sollstellungen frisch aus ContractPosting (Datenstrom).
 --   2. Nur Verträge, die der Benutzer sehen darf (Account.Check: Contract.read
 --      je Buchungskreis und Vertragsart).
---   3. Planen ("Billing.Plan").
+--   3. Planen ("Billing.Plan"): offene Fälligkeiten und Nachberechnung schon
+--      vermerkter Perioden (Buchungsdatum: Tag des Laufs, höchstens der Stichtag).
 --   4. Je Beleg in einer Transaktion: JournalDraft.create, je Position
 --      JournalDraftItem.create, JournalDraft.simulate (nicht buchbar = nichts
 --      angelegt), bei „automatisch buchen“ der Vertragsart JournalDraft.post,
@@ -31,6 +32,7 @@ import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Calendar (Day)
 import Data.Time.Format.ISO8601 (iso8601Show)
+import Data.Time.LocalTime (getZonedTime, localDay, zonedTimeToLocalTime)
 
 import Billing.Cache
 import Billing.Data
@@ -87,7 +89,8 @@ runBilling cache call RunRequest {..} = do
       else pure []
   accounts <- map account <$> get Accounts
   status <- fieldStatus <$> get FieldStatuses
-  posted <- postedKeys sys rrCompany
+  postings <- postedOf sys rrCompany
+  today <- localDay . zonedTimeToLocalTime <$> getZonedTime
   let input =
         Input
           { inTypes = Map.fromList [(ctCode t, t) | t <- types]
@@ -97,20 +100,26 @@ runBilling cache call RunRequest {..} = do
           , inMeasurements = measurements
           , inAccounts = Map.fromList [(aNumber a, a) | a <- accounts]
           , inFieldStatus = status
-          , inPosted = posted
+          , inPosted = postings
+          , inCorrectionDate = min today rrTo
           }
       (docs, planMsgs) = plan rrTo input
       msgs0 = badConditions <> planMsgs
       autoPost d = maybe False ctAutoPost (Map.lookup (cType (dContract d)) (inTypes input))
+      corrections ds = sum (map docCorrections ds)
   decimals <- Map.fromList <$> forM (nub (map (cCurrency . dContract) docs)) (\c -> (c,) <$> currencyDecimals call c)
   let dec c = Map.findWithDefault 2 c decimals
   if rrSimulate
     then
       pure $
         object
-          [ "message" .= ("Vorschau: " <> tshow (length docs) <> " Belege mit " <> tshow (sum (map (length . dEntries) docs)) <> " Fälligkeiten" <> problems (length msgs0))
+          [ "message"
+              .= ( "Vorschau: " <> tshow (length docs) <> " Belege mit " <> tshow (sum (map (length . dEntries) docs)) <> " Fälligkeiten"
+                    <> correctionText (corrections docs) <> problems (length msgs0)
+                 )
           , "documents" .= length docs
           , "items" .= sum (map (length . dEntries) docs)
+          , "corrections" .= corrections docs
           , "planned" .= map (docJson dec autoPost) docs
           , "messages" .= map msgJson msgs0
           ]
@@ -129,8 +138,10 @@ runBilling cache call RunRequest {..} = do
             | null ok && not (null msgs) = "FAILED"
             | not (null msgs) = "PARTIAL"
             | otherwise = "DONE"
+          corrected = corrections (map fst ok)
           message =
             tshow (length ok) <> " Belege mit " <> tshow items <> " Fälligkeiten bis " <> formatDay rrTo
+              <> correctionText corrected
               <> " (" <> tshow (length ok - drafts) <> " gebucht, " <> tshow drafts <> " vorerfasst)" <> problems (length msgs)
       if null failed then pure () else logMessage call LogWarn "Sollstellung mit Meldungen" [("errors", tshow (length msgs))]
       pure $
@@ -140,6 +151,7 @@ runBilling cache call RunRequest {..} = do
           , "documents" .= length ok
           , "drafts" .= drafts
           , "items" .= items
+          , "corrections" .= corrected
           , "errors" .= length msgs
           , "results"
               .= [ object ["contract_id" .= cId (dContract d), "due_date" .= formatDay (dDate d), "draft_id" .= oDraft o, "document_number" .= oDocument o]
@@ -164,15 +176,9 @@ visibleContracts call cs
       let ok = Map.fromList allowed
       pure [c | c <- cs, Map.findWithDefault False (cCompany c, cType c) ok]
 
--- | Bereits vermerkte Fälligkeiten (vorerfasst oder gebucht) – immer frisch.
-postedKeys :: Call -> Text -> IO (Set.Set Key)
-postedKeys sys cc = do
-  rs <- readAll sys "ContractPosting" [("company_code", String cc)]
-  pure . Set.fromList $
-    [ (text "contract_id" r, text "condition_type" r, text "object_id" r, d)
-    | r <- rs
-    , Just d <- [day "period_from" r]
-    ]
+-- | Bereits vermerkte Sollstellungen (vorerfasst oder gebucht) – immer frisch.
+postedOf :: Call -> Text -> IO [Posted]
+postedOf sys cc = concatMap (maybe [] pure . posted) <$> readAll sys "ContractPosting" [("company_code", String cc)]
 
 -- | Vorerfassung anlegen, füllen, prüfen, ggf. buchen, Fälligkeiten vermerken.
 postDoc :: Call -> Maybe Text -> Int -> Bool -> Doc -> IO Outcome
@@ -189,7 +195,7 @@ postDoc tx runId decimals autoPost Doc {..} = do
               , "posting_date" .= iso8601Show dDate
               , "document_date" .= iso8601Show dDate
               , "currency" .= cCurrency c
-              , "header_text" .= ("Sollstellung " <> cId c <> " " <> formatDay dDate)
+              , "header_text" .= (headerKind <> " " <> cId c <> " " <> formatDay dDate)
               , "reference" .= (cId c <> "/" <> stamp)
               ]
         ]
@@ -216,6 +222,10 @@ postDoc tx runId decimals autoPost Doc {..} = do
         ]
   pure (Outcome draftId docNo)
   where
+    headerKind :: Text
+    headerKind
+      | all ((== Correction) . eKind) dEntries = "Nachberechnung"
+      | otherwise = "Sollstellung"
     addLine draftId Line {..} =
       dispatch tx "JournalDraftItem" "create" $
         object
@@ -242,6 +252,8 @@ entryJson e =
         [ "contract_id" .= kContract k
         , "condition_type" .= kType k
         , "object_id" .= kObject k
+        , "kind" .= (if eKind e == Correction then "CORRECTION" else "ORIGINAL" :: Text)
+        , "billing_period" .= iso8601Show (duePeriodFrom d)
         , "period_from" .= iso8601Show (dueFrom d)
         , "period_to" .= iso8601Show (dueTo d)
         , "due_date" .= iso8601Show (dueDate d)
@@ -257,15 +269,24 @@ docJson dec autoPost d@Doc {..} =
     , "due_date" .= formatDay dDate
     , "document_type" .= dDocumentType
     , "auto_post" .= autoPost d
+    , "corrections" .= docCorrections d
     , "lines"
         .= [ object ["account" .= lAccount, "side" .= lSide, "amount" .= formatAmount (dec (cCurrency dContract)) lAmount, "text" .= lText]
            | Line {..} <- dLines
            ]
-    , "periods" .= [formatDay (dueFrom (eDue e)) <> "–" <> formatDay (dueTo (eDue e)) | e <- dEntries]
+    , "periods"
+        .= [ (if eKind e == Correction then "Nachberechnung " else "") <> kType (eCondition e) <> " "
+              <> formatDay (dueFrom (eDue e)) <> "–" <> formatDay (dueTo (eDue e))
+           | e <- dEntries
+           ]
     ]
 
 msgJson :: (Text, Text) -> Value
 msgJson (c, m) = object ["contract_id" .= c, "message" .= m]
+
+correctionText :: Int -> Text
+correctionText 0 = ""
+correctionText n = ", davon " <> tshow n <> " Nachberechnungen"
 
 problems :: Int -> Text
 problems 0 = ""

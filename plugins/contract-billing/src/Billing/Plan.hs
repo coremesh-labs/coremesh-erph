@@ -1,25 +1,40 @@
 -- | Planung der Sollstellung: Welche Fälligkeiten sind bis zum Stichtag noch
--- nicht gebucht, und welche Belege entstehen daraus? Reine Funktion; das
--- Lesen der Daten und das Buchen macht "Billing.Run".
+-- nicht gebucht, was hat sich an schon Gebuchtem geändert, und welche Belege
+-- entstehen daraus? Reine Funktion; das Lesen der Daten und das Buchen macht
+-- "Billing.Run".
 --
--- Ein Beleg je Vertrag und Fälligkeitstag. Je Fälligkeit zwei Positionen:
+-- Abgleich je Gruppe (Vertrag, Konditionsart, Objekt, Kalenderperiode):
+--
+--   * Gruppe ohne Vermerk, fällig bis zum Stichtag: Sollstellung zur
+--     Fälligkeit. Ist sie schon vorbei und liegt nicht nach der letzten schon
+--     gebuchten des Vertrags (Kondition rückwirkend erfasst, z. B. eine Minderung), ist es
+--     eine Nachberechnung zum Datum des Laufs – die alte Periode ist oft
+--     schon gesperrt.
+--   * Gruppe mit Vermerken: neu rechnen; weicht die Summe vom Vermerkten ab
+--     (rückwirkende Anpassung, Minderung, Kündigung, Korrektur), wird die
+--     Differenz nachberechnet. Auch offene Vorerfassungen zählen als vermerkt.
+--
+-- Ein Beleg je Vertrag und Buchungsdatum. Je Fälligkeit zwei Positionen:
 --
 --   * Forderung (wir erhalten): Soll Abstimmkonto der Vertragsart (Debitor),
 --     Haben Sachkonto der Kondition (Erlös).
 --   * Verbindlichkeit (wir zahlen): Soll Sachkonto der Kondition (Aufwand),
 --     Haben Abstimmkonto (Kreditor).
 --
--- Negative Beträge (z. B. Minderungen) tauschen Soll und Haben. Kontierungen
--- (Vertrag, Mietobjekt, Debitor/Kreditor) setzt die Planung nur, wo die
--- Feldstatusgruppe des Kontos sie zulässt; Pflichtfelder prüft der Ledger.
+-- Negative Beträge (Minderungen, Gutschriften) tauschen Soll und Haben; ist
+-- ein Beleg per Saldo negativ, bekommt er die Gutschrift-Belegart (DG bzw.
+-- KG). Kontierungen (Vertrag, Mietobjekt, Debitor/Kreditor) setzt die
+-- Planung nur, wo die Feldstatusgruppe des Kontos sie zulässt; Pflichtfelder
+-- prüft der Ledger.
 module Billing.Plan
   ( Input (..)
-  , Key
+  , Group
   , Entry (..)
   , Line (..)
   , Doc (..)
   , plan
   , entryKey
+  , docCorrections
   , formatAmount
   , formatDay
   ) where
@@ -29,7 +44,6 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (isNothing, listToMaybe)
 import Data.Scientific (Scientific)
-import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -38,8 +52,8 @@ import Data.Time.Calendar
 import Billing.Data
 import Billing.Schedule
 
--- | Bereits gebuchte Fälligkeit: Vertrag, Konditionsart, Objekt, Beginn.
-type Key = (Text, Text, Text, Day)
+-- | Abgleich: Vertrag, Konditionsart, Objekt, Beginn der Kalenderperiode.
+type Group = (Text, Text, Text, Day)
 
 data Input = Input
   { inTypes :: Map Text ContractType
@@ -49,14 +63,16 @@ data Input = Input
   , inMeasurements :: [Measurement]
   , inAccounts :: Map Text Account
   , inFieldStatus :: FieldStatus
-  , inPosted :: Set Key
+  , inPosted :: [Posted] -- ^ schon vermerkte Sollstellungen (vorerfasst oder gebucht)
+  , inCorrectionDate :: Day -- ^ Buchungsdatum der Nachberechnungen (Tag des Laufs)
   }
 
 data Entry = Entry
   { eCondition :: Condition
-  , eDue :: Due
+  , eDue :: Due -- ^ Nachberechnung: ganze Periode, Fälligkeit = Tag des Laufs, Betrag = Differenz
   , eRentObject :: Maybe Text
   , eAccount :: Text -- ^ Sachkonto der Kondition
+  , eKind :: PostingKind
   }
   deriving stock (Show)
 
@@ -78,8 +94,15 @@ data Doc = Doc
   }
   deriving stock (Show)
 
-entryKey :: Entry -> Key
+-- | Schlüssel einer Fälligkeit (Überschneidung von Zeitscheiben).
+entryKey :: Entry -> (Text, Text, Text, Day)
 entryKey e = (kContract (eCondition e), kType (eCondition e), kObject (eCondition e), dueFrom (eDue e))
+
+groupOf :: Entry -> Group
+groupOf e = (kContract (eCondition e), kType (eCondition e), kObject (eCondition e), duePeriodFrom (eDue e))
+
+docCorrections :: Doc -> Int
+docCorrections d = length [() | e <- dEntries d, eKind e == Correction]
 
 -- | Belege bis zum Stichtag und Meldungen (Vertrag, Text) für alles, was sich
 -- nicht buchen lässt.
@@ -90,26 +113,104 @@ plan until Input {..} = (concat docs, concat msgs)
     billable c = cStatus c `elem` ["ACTIVE", "TERMINATED"]
     conditionsOf = Map.fromListWith (flip (<>)) [(kContract k, [k]) | k <- inConditions]
     objectsOf = Map.fromListWith (flip (<>)) [(oContract o, [o]) | o <- inObjects]
+    postedOf = Map.fromListWith (flip (<>)) [(pContract p, [p]) | p <- inPosted]
 
     forContract c = case Map.lookup (cType c) inTypes of
       Nothing -> ([], [(cId c, "Vertragsart " <> cType c <> " fehlt")])
       Just ct -> case ctReconciliation ct of
         Nothing -> ([], [(cId c, "Vertragsart " <> cType c <> ": Abstimmkonto fehlt (Verträge → Vertragsarten)")])
         Just recon ->
-          let results = map (entriesFor c) (Map.findWithDefault [] (cId c) conditionsOf)
-              candidates = concat [es | Right es <- results]
+          let conds = Map.findWithDefault [] (cId c) conditionsOf
+              postings = Map.findWithDefault [] (cId c) postedOf
+              -- Auch Perioden rechnen, die schon vermerkt sind, aber (z. B. nach
+              -- geändertem Fälligkeitstag) erst nach dem Stichtag fällig wären.
+              horizon = maximum (until : [addDays 400 (pTo p) | p <- postings])
+              results = [(k, entriesFor c k horizon) | k <- conds]
+              candidates = concat [es | (_, Right es) <- results]
+              failed = Set.fromList [(kType k, kObject k) | (k, Left _) <- results]
               -- Gleiche Fälligkeit zweimal = Zeitscheiben einer Kondition überschneiden sich (Datenfehler).
               clashes = Map.keys (Map.filter (> (1 :: Int)) (Map.fromListWith (+) [(entryKey e, 1) | e <- candidates]))
               overlap = [(cId c, "Kondition " <> t <> ": Zeitscheiben überschneiden sich (" <> formatDay from <> ") – Vertrag nicht gebucht") | (_, t, _, from) <- clashes]
-              entries = if null clashes then candidates else []
-              errors = [(cId c, e) | Left e <- results] <> overlap
+              errors = [(cId c, e) | (_, Left e) <- results] <> overlap
+              entries = if null clashes then reconcile c conds postings failed candidates else []
               byDate = Map.fromListWith (flip (<>)) [(dueDate (eDue e), [e]) | e <- entries]
               payable = ctDirection ct == "PAYABLE"
-              docType = maybe (if payable then "KR" else "DR") id (ctDocumentType ct)
-              mk (date, es) = Doc c date docType es (concatMap (linesFor c payable recon) es)
+              docType es
+                | sum (map (dueAmount . eDue) es) < 0 = maybe (if payable then "KG" else "DG") id (ctCreditDocumentType ct)
+                | otherwise = maybe (if payable then "KR" else "DR") id (ctDocumentType ct)
+              mk (date, es) = Doc c date (docType es) es (concatMap (linesFor c payable recon) es)
            in (map mk (Map.toList byDate), errors)
 
-    entriesFor c k = do
+    -- Abgleich der gerechneten Fälligkeiten mit dem Vermerkten.
+    reconcile c conds postings failed candidates =
+      let computed = Map.fromListWith (flip (<>)) [(groupOf e, [e]) | e <- candidates]
+          postedSum = Map.fromListWith (+) [(postedGroup conds p, pAmount p) | p <- postings]
+          lastDue = maximumMaybe [pDue p | p <- postings, pKind p == Original]
+          -- schon fällig und nicht nach der letzten gebuchten Fälligkeit: nachträglich
+          late e = dueDate (eDue e) < inCorrectionDate && maybe False (dueDate (eDue e) <=) lastDue
+          originals =
+            [ if late e then asCorrection e else e
+            | (g, es) <- Map.toList computed
+            , g `Map.notMember` postedSum
+            , e <- es
+            , dueDate (eDue e) <= until
+            , dueAmount (eDue e) /= 0
+            ]
+          corrections =
+            [ correction c g es (filter ((== g) . postedGroup conds) postings) diff
+            | (g@(_, t, o, _), done) <- Map.toList postedSum
+            , (t, o) `Set.notMember` failed
+            , let es = Map.findWithDefault [] g computed
+                  diff = sum (map (dueAmount . eDue) es) - done
+            , diff /= 0
+            ]
+       in originals <> corrections
+
+    asCorrection e = e {eDue = (eDue e) {dueDate = inCorrectionDate}, eKind = Correction}
+
+    -- Nachberechnung einer Periode: Differenz zum Vermerkten, zum Tag des Laufs.
+    -- Konto und Mietobjekt wie gerechnet, sonst wie zuletzt vermerkt (Kondition
+    -- entfallen, Vertrag rückwirkend beendet).
+    correction c (_, t, o, ps) es ps' diff =
+      let lastPosted = listToMaybe (reverse (sortOn pDue ps'))
+          pe = case es of
+            e : _ -> duePeriodTo (eDue e)
+            [] -> maybe ps pTo lastPosted
+          k = case es of
+            e : _ -> eCondition e
+            [] -> orphan c t o ps pe
+       in Entry
+            { eCondition = k
+            , eDue = Due ps pe ps pe inCorrectionDate diff
+            , eRentObject = case es of
+                e : _ -> eRentObject e
+                [] -> lastPosted >>= pRentObject
+            , eAccount = case es of
+                e : _ -> eAccount e
+                [] -> maybe "" pAccount lastPosted
+            , eKind = Correction
+            }
+
+    -- Kondition, die es für die Periode nicht mehr gibt.
+    orphan c t o ps pe =
+      Condition
+        { kContract = cId c, kType = t, kObject = o, kPerUnit = False, kAmount = 0, kMeasurement = Nothing
+        , kFrequency = Monthly, kDueDay = 1, kDueDate = Nothing, kMode = InAdvance, kAccount = Nothing, kPayer = Nothing
+        , kFrom = ps, kTo = pe
+        }
+
+    -- Kalenderperiode eines Vermerks; bei alten Vermerken (ohne Periode) aus
+    -- dem Rhythmus der Kondition, die den Tag abdeckt.
+    postedGroup conds p =
+      let start = case pPeriod p of
+            Just d -> d
+            Nothing ->
+              case [k | k <- conds, kType k == pType p, kObject k == pObject p, kFrom k <= pFrom p, pFrom p <= kTo k] of
+                k : _ -> fst (periodOf (kFrequency k) (pFrom p))
+                [] -> pFrom p
+       in (pContract p, pType p, pObject p, start)
+
+    entriesFor c k horizon = do
       acc <- maybe (Left ("Kondition " <> kType k <> ": Sachkonto fehlt (Kontenfindung)")) Right (kAccount k)
       let from = max (kFrom k) (cFrom c)
           to = min (kTo k) (cTo c)
@@ -117,17 +218,17 @@ plan until Input {..} = (concat docs, concat msgs)
           amountAt d
             | kPerUnit k = maybe 0 (\v -> roundScientific (fromInteger (kAmount k) * v)) (valueAt d)
             | otherwise = kAmount k
-          ds = dues (kFrequency k) (kMode k) (kDueDay k) amountAt from to until
-          missing = [dueFrom x | kPerUnit k, x <- ds, isNothing (valueAt (dueFrom x))]
-          entry x = Entry k x (rentObject c k (dueFrom x)) acc
-          open = [e | e <- map entry ds, entryKey e `Set.notMember` inPosted, dueAmount (eDue e) /= 0]
+          ds = case kFrequency k of
+            Once -> dueOnce (kDueDate k) amountAt from to horizon
+            f -> dues f (kMode k) (kDueDay k) amountAt from to horizon
+          missing = [dueFrom x | kPerUnit k, x <- ds, dueDate x <= until, isNothing (valueAt (dueFrom x))]
       case missing of
         d : _ ->
           Left
             ( "Kondition " <> kType k <> ": keine Bemessung " <> maybe "?" id (kMeasurement k)
                 <> " für " <> kObject k <> " am " <> formatDay d
             )
-        [] -> Right open
+        [] -> Right [Entry k x (rentObject c k (dueFrom x)) acc Original | x <- ds]
 
     measurementAt obj typ d =
       listToMaybe [mValue m | m <- inMeasurements, mObject m == obj, mType m == typ, mFrom m <= d, d <= mTo m]
@@ -151,7 +252,9 @@ plan until Input {..} = (concat docs, concat msgs)
           amount = dueAmount due
           (debit, credit) = if amount < 0 then ("H", "S") else ("S", "H")
           partner = maybe (cPartner c) id (kPayer k)
-          txt = itemText k due
+          txt = case eKind e of
+            Original -> itemText k due
+            Correction -> "Nachberechnung " <> kType k <> " " <> periodText (dueFrom due) (dueTo due)
           common = [("rent_contract_id", cId c)] <> maybe [] (\o -> [("rent_object_id", o)]) (eRentObject e)
           withFields acc fs = Line acc "" (abs amount) txt (allowed acc fs)
        in if payable
@@ -171,6 +274,10 @@ plan until Input {..} = (concat docs, concat msgs)
         let grp = if T.null (aGroup a) then "STD" else aGroup a
          in [f | f@(name, _) <- fs, Map.lookup (grp, name) inFieldStatus `elem` [Just "OPTIONAL", Just "REQUIRED"]]
 
+maximumMaybe :: Ord a => [a] -> Maybe a
+maximumMaybe [] = Nothing
+maximumMaybe xs = Just (maximum xs)
+
 shortNumber :: Text -> Text
 shortNumber a = case T.breakOnEnd "-" a of
   ("", _) -> a
@@ -179,13 +286,20 @@ shortNumber a = case T.breakOnEnd "-" a of
 -- | „KM 10/2026“, bei Teilperioden mit Zeitraum.
 itemText :: Condition -> Due -> Text
 itemText k d =
-  let (y, m, _) = toGregorian (duePeriodFrom d)
-      period = case kFrequency k of
+  let period = case kFrequency k of
         Once -> formatDay (dueFrom d)
-        Monthly -> T.pack (show m) <> "/" <> T.pack (show y)
-        _ -> formatDay (duePeriodFrom d) <> "–" <> formatDay (duePeriodTo d)
+        _ -> periodText (duePeriodFrom d) (duePeriodTo d)
       partial = dueFrom d /= duePeriodFrom d || dueTo d /= duePeriodTo d
    in kType k <> " " <> period <> (if partial && kFrequency k /= Once then " anteilig " <> formatDay (dueFrom d) <> "–" <> formatDay (dueTo d) else "")
+
+-- | Ein Kalendermonat als „10/2026“, sonst „01.10.2026–31.12.2026“ bzw. ein Tag.
+periodText :: Day -> Day -> Text
+periodText from to
+  | from == to = formatDay from
+  | d == 1 && to == fromGregorian y m (gregorianMonthLength y m) = T.pack (show m) <> "/" <> T.pack (show y)
+  | otherwise = formatDay from <> "–" <> formatDay to
+  where
+    (y, m, d) = toGregorian from
 
 formatDay :: Day -> Text
 formatDay d = let (y, m, dd) = toGregorian d in T.pack (pad dd <> "." <> pad m <> "." <> show y)
