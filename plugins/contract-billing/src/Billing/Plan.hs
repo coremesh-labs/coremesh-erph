@@ -354,13 +354,15 @@ plan until Input {..} = (concat docs, concat msgs)
               , (withFields counter (common <> objectDims)) {lSide = credit}
               ]
             Nothing
+              -- Gebäude bzw. Wirtschaftseinheit des Vertrags auch auf der Aufwands- bzw. Erlöszeile
+              -- (z. B. Versorger- oder Hausmeistervertrag für ein Haus)
               | payable ->
-                  [ (withFields (eAccount e) (common <> [("supplier_id", partner)])) {lSide = debit}
+                  [ (withFields (eAccount e) (common <> objectDims <> [("supplier_id", partner)])) {lSide = debit}
                   , (withFields recon (common <> [("supplier_id", partner)])) {lSide = credit}
                   ]
               | otherwise ->
                   [ (withFields recon (common <> [("sd_customer_id", partner)])) {lSide = debit}
-                  , (withFields (eAccount e) common) {lSide = credit}
+                  , (withFields (eAccount e) (common <> objectDims)) {lSide = credit}
                   ]
 
     -- Nur Kontierungen, die die Feldstatusgruppe des Kontos nicht ausblendet.
