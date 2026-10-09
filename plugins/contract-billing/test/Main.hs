@@ -11,6 +11,7 @@ import Data.Time.Calendar
 import System.Exit (exitFailure)
 
 import Billing.Data
+import Billing.Depreciation
 import Billing.Loan
 import Billing.OpCost
 import Billing.Plan
@@ -97,6 +98,7 @@ main = do
 
   planTests check
   loanTests check
+  depreciationTests check
   settlementTests check
   opCostTests check
 
@@ -142,6 +144,7 @@ planTests check = do
           , inFieldStatus = status
           , inLoans = []
           , inLoanPayments = []
+          , inDepreciations = []
           , inPartnerAccounts =
               Map.fromList
                 [ (("P1", "TENANT"), PartnerAccount "P1" "TENANT" (Just "1200") False)
@@ -340,7 +343,7 @@ loanTests check = do
         Input
           { inTypes = Map.fromList [("DA", ContractType "DA" "PAYABLE" "CREDITOR" (Just "KR") Nothing True)]
           , inContracts = [bank], inConditions = [], inObjects = [], inMeasurements = [], inAccounts = Map.empty, inFieldStatus = Map.empty
-          , inLoans = [terms], inLoanPayments = []
+          , inLoans = [terms], inLoanPayments = [], inDepreciations = []
           , inPartnerAccounts = Map.fromList [(("BANK", "CREDITOR"), PartnerAccount "BANK" "CREDITOR" (Just "1600") False)]
           , inPosted = [], inCorrectionDate = d 2026 3 10, inBackdateFrom = Nothing
           }
@@ -355,6 +358,40 @@ loanTests check = do
     roundTo x = roundDiv (numerator x) (denominator x)
 
 -- | Vertragsabrechnung (WEG): Prüfungen und Buchungsplan.
+-- | Abschreibung: linear und degressiv monatsgenau, Zugang, Verkauf; Buchung nur auf Sachkonten.
+depreciationTests :: (forall a. (Eq a, Show a) => String -> a -> a -> IO ()) -> IO ()
+depreciationTests check = do
+  let d = fromGregorian
+      terms = DepTerms "KV-1" (d 2025 7 15) openEnd 30000000 2 Linear (d 2025 7 15) Nothing "0230" "6221" "AF"
+      rows = depSchedule [terms] openEnd (d 2027 12 31)
+  check "linear: 2025 sechs Monate, dann volle Jahre" [(d 2025 12 31, 6, 300000), (d 2026 12 31, 12, 600000), (d 2027 12 31, 12, 600000)]
+    [(drDue r, drMonths r, drAmount r) | r <- rows]
+  check "linear: Buchwert" [29700000, 29100000, 28500000] (map drBookAfter rows)
+  -- Übernahme mit Restbuchwert, nachträgliche Herstellungskosten 2027 (+10.000)
+  let taken = terms {dpStart = d 2026 1 1, dpFrom = d 2026 1 1, dpOpening = Just 29700000}
+      later = taken {dpFrom = d 2027 3 1, dpBase = 31000000}
+      rows2 = depSchedule [taken, later] openEnd (d 2027 12 31)
+  check "Übernahme und Zugang" [(600000, 0, 29100000), (620000, 1000000, 29480000)] [(drAmount r, drAddition r, drBookAfter r) | r <- rows2]
+  -- degressiv 5 % vom Buchwert, Verkauf zum 30.06.2027
+  let degr = terms {dpMethod = Degressive, dpRate = 5, dpStart = d 2026 1 1, dpFrom = d 2026 1 1}
+      rows3 = depSchedule [degr] (d 2027 6 30) (d 2030 12 31)
+  check "degressiv und Verkauf" [(d 2026 12 31, 1500000), (d 2027 6 30, 712500)] [(drDue r, drAmount r) | r <- rows3]
+  -- Plan: Kaufvertrag ohne Partnerkonto, Beleg SA, Aufwand an Anlage, Gebäude als Kontierung
+  let kv = Contract "1000" "KV-1" "KV" "ACTIVE" "SELLER" "EUR" "" (d 2025 7 15) openEnd Nothing
+      input =
+        Input
+          { inTypes = Map.fromList [("KV", ContractType "KV" "PAYABLE" "CREDITOR" Nothing Nothing False)]
+          , inContracts = [kv], inConditions = [], inObjects = [ContractObject "KV-1" "Building" "HAUS1" True (d 2025 7 15) openEnd]
+          , inMeasurements = [], inAccounts = Map.empty, inFieldStatus = Map.empty, inLoans = [], inLoanPayments = []
+          , inDepreciations = [terms], inPartnerAccounts = Map.empty, inPosted = [], inCorrectionDate = d 2026 12 31, inBackdateFrom = Nothing
+          }
+      (docs, msgs) = plan (d 2026 12 31) input
+  check "Abschreibung: keine Meldungen" [] msgs
+  check "Abschreibung: zwei Belege SA" [(d 2025 12 31, "SA"), (d 2026 12 31, "SA")] [(dDate x, dDocumentType x) | x <- docs]
+  check "Abschreibung: Aufwand an Anlage, Gebäude"
+    [("6221", "S", 600000, Just "HAUS1"), ("0230", "H", 600000, Just "HAUS1")]
+    [(lAccount l, lSide l, lAmount l, lookup "dimension_custom_1" (lFields l)) | x <- docs, dDate x == d 2026 12 31, l <- dLines x]
+
 settlementTests :: (forall a. (Eq a, Show a) => String -> a -> a -> IO ()) -> IO ()
 settlementTests check = do
   let d = fromGregorian

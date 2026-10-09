@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.9.0 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.10.0 |
 
 ## Bauen, testen, starten
 
@@ -116,6 +116,14 @@ vor jedem Lauf die offenen Vorerfassungen ab (Events gehen höchstens einmal zu)
 Sollstellung frühestens ab Vertragsbeginn, Beginn der Kondition und – seit 0.8.1 – dem Feld
 **„Sollstellung ab“** am Vertrag (`billing_start`, z. B. Übernahmestichtag aus einem Altsystem):
 Davor entstehen weder Sollstellungen noch Nachberechnungen.
+
+**Abschreibung** (seit 0.10.0, `Billing.Depreciation`): aus `ContractDepreciation` je Jahr eine
+Fälligkeit zum 31.12. bzw. Vertragsende, monatsgenau (erstes Jahr ab dem Monat des Beginns);
+linear = Bemessungsgrundlage × Satz, degressiv = Buchwert × Satz, jeweils × Monate / 12, bis
+Buchwert 0. Höhere Bemessungsgrundlage in einer neuen Zeitscheibe = Zugang für das ganze Jahr.
+Gebucht wird Abschreibungs- an Anlagekonto ohne Partnerzeile (Belegart SA), mit Gebäude bzw.
+Wirtschaftseinheit als Kontierung (`dimension_custom_1`/`_2`); `ContractBilling.depreciationSchedule`
+liefert den Plan als Tabelle.
 
 **Rückwirkend buchen ab** (seit 0.9.0, Steuerung des Buchungskreises im Hauptbuch,
 `LedgerCompanyConfig.backdate_from`): Nachberechnungen buchen sonst zum Tag des Laufs; mit

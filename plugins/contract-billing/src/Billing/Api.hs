@@ -4,6 +4,7 @@
 -- |---|---|---|
 -- | ContractBilling.run | company_code, to_date, contract_id?, simulate?, run_id? | Belege, Meldungen (simulate: geplante Belege) |
 -- | ContractBilling.loanSchedule | company_code, contract_id | Tilgungsplan (message, table) |
+-- | ContractBilling.depreciationSchedule | company_code, contract_id | Abschreibungsplan (message, table) |
 -- | ContractBilling.checkSettlement | company_code, contract_id, period_from, advance_types, tolerance | Prüfungen (message, table) |
 -- | ContractBilling.postSettlement | wie checkSettlement | prüfen, vorerfassen, ggf. buchen, vermerken |
 -- | ContractBilling.computeOpCost | company_code, definition, rules, keys, categories, period_from, period_to | Nebenkostenabrechnung: Journal, Ergebnis je Mieter, Prüfungen |
@@ -38,10 +39,10 @@ callbackObject = "ContractBillingCache"
 
 billingPlugin :: Cache -> Plugin
 billingPlugin cache =
-  (defaultPlugin "contract-billing" "0.9.0")
+  (defaultPlugin "contract-billing" "0.10.0")
     { pluginDescription = "Vertragsbuchung: Sollstellung der Verträge über die Vorerfassung des Hauptbuchs"
     , pluginCapabilities =
-        [ Capability "ContractBilling" ["run", "loanSchedule", "checkSettlement", "postSettlement", "computeOpCost", "refresh", "cache"] []
+        [ Capability "ContractBilling" ["run", "loanSchedule", "depreciationSchedule", "checkSettlement", "postSettlement", "computeOpCost", "refresh", "cache"] []
             "Sollstellung der Verträge rechnen und buchen, Tilgungspläne, Vertragsabrechnungen prüfen und buchen, Nebenkostenabrechnung rechnen"
         , Capability callbackObject ["onEvent"] [] "Änderungen an Stammdaten (SystemEvent)"
         ]
@@ -84,6 +85,10 @@ handler cache call req = case (reqObject req, reqAction req) of
           , rrSimulate = bool "simulate" p
           , rrRunId = textMaybe "run_id" p
           }
+  ("ContractBilling", "depreciationSchedule") -> do
+    cc <- required "company_code" "Buchungskreis"
+    cid <- required "contract_id" "Vertrag"
+    response <$> depreciationPlan cache call cc cid
   ("ContractBilling", "loanSchedule") -> do
     cc <- required "company_code" "Buchungskreis"
     cid <- required "contract_id" "Vertrag"

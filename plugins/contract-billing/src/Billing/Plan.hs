@@ -47,7 +47,7 @@ import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Containers.ListUtils (nubOrd)
-import Data.Maybe (isNothing, listToMaybe)
+import Data.Maybe (isJust, isNothing, listToMaybe)
 import Data.Scientific (Scientific)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -55,6 +55,7 @@ import Data.Text qualified as T
 import Data.Time.Calendar
 
 import Billing.Data
+import Billing.Depreciation
 import Billing.Loan
 import Billing.Schedule
 
@@ -71,6 +72,7 @@ data Input = Input
   , inFieldStatus :: FieldStatus
   , inLoans :: [LoanTerms] -- ^ Darlehenskonditionen (Zeitscheiben)
   , inLoanPayments :: [LoanPayment] -- ^ Sondertilgungen
+  , inDepreciations :: [DepTerms] -- ^ Abschreibungskonditionen (Zeitscheiben)
   , inPartnerAccounts :: Map (Text, Text) PartnerAccount -- ^ (Partner, Rolle) → Buchungskreisdaten im Buchungskreis
   , inPosted :: [Posted] -- ^ schon vermerkte Sollstellungen (vorerfasst oder gebucht)
   , inCorrectionDate :: Day -- ^ Buchungsdatum der Nachberechnungen (Tag des Laufs)
@@ -85,6 +87,7 @@ data Entry = Entry
   , eRentObject :: Maybe Text
   , eAccount :: Text -- ^ Sachkonto der Kondition
   , eKind :: PostingKind
+  , eCounter :: Maybe Text -- ^ Gegenkonto statt Partnerkonto (Abschreibung: Anlagekonto) – Beleg nur auf Sachkonten
   }
   deriving stock (Show)
 
@@ -128,13 +131,16 @@ plan until Input {..} = (concat docs, concat msgs)
     postedOf = Map.fromListWith (flip (<>)) [(pContract p, [p]) | p <- inPosted]
     loansOf = Map.fromListWith (flip (<>)) [(lnContract l, [l]) | l <- inLoans]
     paymentsOf = Map.fromListWith (flip (<>)) [(lpContract p, [p]) | p <- inLoanPayments]
+    depsOf = Map.fromListWith (flip (<>)) [(dpContract d, [d]) | d <- inDepreciations]
 
     forContract c = case Map.lookup (cType c) inTypes of
       Nothing -> ([], [(cId c, "Vertragsart " <> cType c <> " fehlt")])
       Just ct ->
         let conds0 = Map.findWithDefault [] (cId c) conditionsOf
             -- Abstimmkonto je Zahler (Vertragspartner oder abweichender Zahler) aus seinen Buchungskreisdaten in der Rolle der Vertragsart
-            payers = nubOrd (cPartner c : [p | k <- conds0, Just p <- [kPayer k]])
+            -- Nur mit Konditionen oder Darlehen gibt es Partnerzeilen; reine Abschreibung bucht auf Sachkonten.
+            needsPartner = not (null conds0) || Map.member (cId c) loansOf
+            payers = if needsPartner then nubOrd (cPartner c : [p | k <- conds0, Just p <- [kPayer k]]) else []
             accountOf p = case Map.lookup (p, ctRole ct) inPartnerAccounts of
               Nothing -> Left ("Partnerkonto fehlt: " <> p <> " hat in der Rolle " <> ctRole ct <> " keine Buchungskreisdaten (Partnermodul) – Vertrag nicht gebucht")
               Just a
@@ -152,7 +158,7 @@ plan until Input {..} = (concat docs, concat msgs)
               -- geändertem Fälligkeitstag) erst nach dem Stichtag fällig wären.
               horizon = maximum (until : [addDays 400 (pTo p) | p <- postings])
               results = [(k, entriesFor c k horizon) | k <- conds]
-              candidates = concat [es | (_, Right es) <- results] <> loanEntries c horizon
+              candidates = concat [es | (_, Right es) <- results] <> loanEntries c horizon <> depEntries c horizon
               failed = Set.fromList [(kType k, kObject k) | (k, Left _) <- results]
               -- Gleiche Fälligkeit zweimal = Zeitscheiben einer Kondition überschneiden sich (Datenfehler).
               clashes = Map.keys (Map.filter (> (1 :: Int)) (Map.fromListWith (+) [(entryKey e, 1) | e <- candidates]))
@@ -162,6 +168,7 @@ plan until Input {..} = (concat docs, concat msgs)
               byDate = Map.fromListWith (flip (<>)) [(dueDate (eDue e), [e]) | e <- entries]
               payable = ctDirection ct == "PAYABLE"
               docType es
+                | all (isJust . eCounter) es = "SA"
                 | sum (map (dueAmount . eDue) es) < 0 = maybe (if payable then "KG" else "DG") id (ctCreditDocumentType ct)
                 | otherwise = maybe (if payable then "KR" else "DR") id (ctDocumentType ct)
               recon e = Map.findWithDefault "" (maybe (cPartner c) id (kPayer (eCondition e))) reconOf
@@ -220,6 +227,9 @@ plan until Input {..} = (concat docs, concat msgs)
                 e : _ -> eAccount e
                 [] -> maybe "" pAccount lastPosted
             , eKind = Correction
+            , eCounter = case es of
+                e : _ -> eCounter e
+                [] -> Nothing
             }
 
     -- Darlehen: Zeilen des Tilgungsplans als Fälligkeiten – Zins aufs Zinskonto,
@@ -234,7 +244,7 @@ plan until Input {..} = (concat docs, concat msgs)
             mk typ acc freq row amt =
               let k = loanCondition c typ acc freq row
                   due = Due (rFrom row) (rTo row) (rFrom row) (rTo row) (rDue row) amt
-               in Entry k due (rentObject c k (rDue row)) acc Original
+               in Entry k due (rentObject c k (rDue row)) acc Original Nothing
          in concat
               [ case rKind row of
                   Disbursement -> [mk (lnDisbursementType t) (lnLoanAccount t) Once row (negate (rPrincipal row))]
@@ -246,6 +256,18 @@ plan until Input {..} = (concat docs, concat msgs)
               | row <- rows
               , let t = termsAt (rDue row)
               ]
+
+    -- Abschreibung: je Jahr eine Fälligkeit zum Jahres- bzw. Vertragsende,
+    -- Aufwandskonto an Anlagekonto (Vermerk unter der Konditionsart der Kondition).
+    depEntries c horizon =
+      [ Entry k due (rentObject c k (drDue row)) (dpExpenseAccount t) Original (Just (dpAssetAccount t))
+      | row <- depSchedule (Map.findWithDefault [] (cId c) depsOf) (cTo c) horizon
+      , drAmount row /= 0
+      , let t = drTerms row
+            k = (loanCondition c (dpType t) (dpExpenseAccount t) Yearly row') {kFrom = drFrom row, kTo = drTo row}
+            row' = Row Regular (drFrom row) (drTo row) (drDue row) 0 0 0
+            due = Due (drFrom row) (drTo row) (drFrom row) (drTo row) (drDue row) (drAmount row)
+      ]
 
     loanCondition c typ acc freq row =
       Condition
@@ -291,7 +313,7 @@ plan until Input {..} = (concat docs, concat msgs)
             ( "Kondition " <> kType k <> ": keine Bemessung " <> maybe "?" id (kMeasurement k)
                 <> " für " <> kObject k <> " am " <> formatDay d
             )
-        [] -> Right [Entry k x (rentObject c k (dueFrom x)) acc Original | x <- ds]
+        [] -> Right [Entry k x (rentObject c k (dueFrom x)) acc Original Nothing | x <- ds]
 
     measurementAt obj typ d =
       listToMaybe [mValue m | m <- inMeasurements, mObject m == obj, mType m == typ, mFrom m <= d, d <= mTo m]
@@ -320,15 +342,26 @@ plan until Input {..} = (concat docs, concat msgs)
             Correction -> "Nachberechnung " <> kType k <> " " <> periodText (dueFrom due) (dueTo due)
           common = [("rent_contract_id", cId c)] <> maybe [] (\o -> [("rent_object_id", o)]) (eRentObject e)
           withFields acc fs = Line acc "" (abs amount) txt (allowed acc fs)
-       in if payable
-            then
-              [ (withFields (eAccount e) (common <> [("supplier_id", partner)])) {lSide = debit}
-              , (withFields recon (common <> [("supplier_id", partner)])) {lSide = credit}
+          -- Gebäude bzw. Wirtschaftseinheit als Hauptobjekt (Abschreibung eines ganzen Hauses)
+          objectDims =
+            [ (field, oId o)
+            | o <- take 1 [o | o <- Map.findWithDefault [] (cId c) objectsOf, oMain o]
+            , Just field <- [lookup (oType o) [("Building", "dimension_custom_1"), ("BusinessEntity", "dimension_custom_2")]]
+            ]
+       in case eCounter e of
+            Just counter ->
+              [ (withFields (eAccount e) (common <> objectDims)) {lSide = debit}
+              , (withFields counter (common <> objectDims)) {lSide = credit}
               ]
-            else
-              [ (withFields recon (common <> [("sd_customer_id", partner)])) {lSide = debit}
-              , (withFields (eAccount e) common) {lSide = credit}
-              ]
+            Nothing
+              | payable ->
+                  [ (withFields (eAccount e) (common <> [("supplier_id", partner)])) {lSide = debit}
+                  , (withFields recon (common <> [("supplier_id", partner)])) {lSide = credit}
+                  ]
+              | otherwise ->
+                  [ (withFields recon (common <> [("sd_customer_id", partner)])) {lSide = debit}
+                  , (withFields (eAccount e) common) {lSide = credit}
+                  ]
 
     -- Nur Kontierungen, die die Feldstatusgruppe des Kontos nicht ausblendet.
     allowed acc fs = case Map.lookup (shortNumber acc) inAccounts of

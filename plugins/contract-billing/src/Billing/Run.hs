@@ -19,6 +19,7 @@ module Billing.Run
   ( RunRequest (..)
   , runBilling
   , loanPlan
+  , depreciationPlan
   , SettlementRequest (..)
   , settlementCheck
   , settlementPost
@@ -43,6 +44,7 @@ import Data.Time.LocalTime (getZonedTime, localDay, zonedTimeToLocalTime)
 
 import Billing.Cache
 import Billing.Data
+import Billing.Depreciation
 import Billing.Loan
 import Billing.Plan
 import Billing.Schedule (Due (..), roundDiv)
@@ -101,6 +103,10 @@ runBilling cache call RunRequest {..} = do
       loans = mine lnContract [l | (_, Right l) <- parsedLoans]
       badLoans = [(c, "Darlehenskondition nicht lesbar: " <> e) | (c, Left e) <- parsedLoans, c `Set.member` ids]
   payments <- mine lpContract . concatMap (maybe [] pure . loanPayment) <$> get LoanPayments
+  depRecs <- get Depreciations
+  let parsedDeps = [(text "contract_id" r, depTerms r) | r <- depRecs]
+      deps = mine dpContract [d | (_, Right d) <- parsedDeps]
+      badDeps = [(c, "Abschreibungskondition nicht lesbar: " <> e) | (c, Left e) <- parsedDeps, c `Set.member` ids]
   accounts <- map account <$> get Accounts
   status <- fieldStatus <$> get FieldStatuses
   postings <- postedOf sys rrCompany
@@ -121,13 +127,14 @@ runBilling cache call RunRequest {..} = do
           , inFieldStatus = status
           , inLoans = loans
           , inLoanPayments = payments
+          , inDepreciations = deps
           , inPartnerAccounts = Map.fromList [((paPartner a, paRole a), a) | a <- partnerAccounts]
           , inPosted = postings
           , inCorrectionDate = min today rrTo
           , inBackdateFrom = backdateFrom
           }
       (docs, planMsgs) = plan rrTo input
-      msgs0 = badConditions <> badLoans <> planMsgs
+      msgs0 = badConditions <> badLoans <> badDeps <> planMsgs
       autoPost d = maybe False ctAutoPost (Map.lookup (cType (dContract d)) (inTypes input))
       corrections ds = sum (map docCorrections ds)
   decimals <- Map.fromList <$> forM (nub (map (cCurrency . dContract) docs)) (\c -> (c,) <$> currencyDecimals call c)
@@ -359,6 +366,43 @@ loanPlan cache call cc contractId = do
                          , if rKind r == Regular then formatDay (rFrom r) <> "–" <> formatDay (rTo r) else ""
                          , amt (rInterest r), amt (rPrincipal r), amt (rInterest r + if rKind r == Disbursement then 0 else rPrincipal r), amt (rBalance r)
                          ]
+                       | r <- rows
+                       ]
+                ]
+          ]
+
+-- | Abschreibungsplan eines Vertrags (Aktion „Abschreibungsplan“): je Jahr bis
+-- zum Buchwert 0 bzw. Vertragsende, als Tabelle.
+depreciationPlan :: Cache -> Call -> Text -> Text -> IO Value
+depreciationPlan cache call cc contractId = do
+  sys <- systemCall call (callTenantId call)
+  let get = slice cache sys cc
+  terms <- concatMap (either (const []) pure . depTerms) <$> get Depreciations
+  contracts <- concatMap (maybe [] pure . contract) <$> get Contracts
+  let mine = [d | d <- terms, dpContract d == contractId]
+      c = [x | x <- contracts, cId x == contractId]
+  case (mine, c) of
+    ([], _) -> pluginError NotFound ("Vertrag " <> contractId <> " hat keine Abschreibungskondition")
+    (_, []) -> pluginError NotFound ("Vertrag " <> contractId <> " gibt es im Buchungskreis " <> cc <> " nicht")
+    (_, k : _) -> do
+      dec <- currencyDecimals call (cCurrency k)
+      let rows = depSchedule mine (cTo k) (fromGregorian 2199 12 31)
+          amt = formatAmount dec
+          total = sum (map drAmount rows)
+          lastYear = case reverse rows of
+            r : _ -> formatDay (drDue r)
+            [] -> "–"
+      pure $
+        object
+          [ "message"
+              .= ( "Abschreibungsplan " <> contractId <> ": " <> tshow (length rows) <> " Jahre bis " <> lastYear <> ", Abschreibung gesamt "
+                    <> amt total <> " " <> cCurrency k
+                 )
+          , "table"
+              .= object
+                [ "columns" .= (["Jahr bis", "Monate", "Buchwert Anfang", "Zugang", "Abschreibung", "Buchwert Ende"] :: [Text])
+                , "rows"
+                    .= [ [formatDay (drDue r), tshow (drMonths r), amt (drBookBefore r - drAddition r), amt (drAddition r), amt (drAmount r), amt (drBookAfter r)]
                        | r <- rows
                        ]
                 ]

@@ -25,6 +25,7 @@ module Billing.Data
   , partnerAccount
   , loanTerms
   , loanPayment
+  , depTerms
   , fieldStatus
   , text
   , textMaybe
@@ -46,6 +47,7 @@ import Data.Text qualified as T
 import Data.Time.Calendar (Day, fromGregorian)
 import Data.Time.Format.ISO8601 (iso8601ParseM)
 
+import Billing.Depreciation
 import Billing.Loan
 import Billing.Schedule (Frequency (..), PaymentMode (..))
 
@@ -346,6 +348,31 @@ loanTerms r = do
       , lnPrincipalType = text "principal_type" r
       , lnSpecialType = text "special_type" r
       , lnDisbursementType = text "disbursement_type" r
+      }
+
+-- | Abschreibungskondition (ContractDepreciation).
+depTerms :: Record -> Either Text DepTerms
+depTerms r = do
+  from <- maybe (Left "Gültig ab fehlt") Right (day "valid_from" r)
+  base <- maybe (Left "Bemessungsgrundlage fehlt") Right (int "base_amount" r)
+  rate <- maybe (Left ("Satz " <> text "rate" r)) Right (parseRate (text "rate" r))
+  method <- case text "method" r of
+    "LINEAR" -> Right Linear
+    "DEGRESSIVE" -> Right Degressive
+    m -> Left ("unbekannte Abschreibungsmethode " <> m)
+  pure
+    DepTerms
+      { dpContract = text "contract_id" r
+      , dpFrom = from
+      , dpTo = until' "valid_to" r
+      , dpBase = base
+      , dpRate = rate
+      , dpMethod = method
+      , dpStart = maybe from id (day "start_date" r)
+      , dpOpening = int "opening_value" r
+      , dpAssetAccount = text "asset_account" r
+      , dpExpenseAccount = text "expense_account" r
+      , dpType = let t = text "condition_type" r in if T.null t then "AF" else t
       }
 
 loanPayment :: Record -> Maybe LoanPayment
