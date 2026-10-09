@@ -19,8 +19,10 @@ module Billing.Cache
   , watched
   , info
   , readAll
+  , readAllOrEmpty
   ) where
 
+import Control.Exception (try)
 import Control.Concurrent.STM
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.Key qualified as K
@@ -132,6 +134,10 @@ info c tenant = do
       ]
 
 -- | Liest (object, list) als Datenstrom vollständig.
+-- | Wie readAll; ist das Object nicht erreichbar (Modul fehlt), leer.
+readAllOrEmpty :: Call -> Text -> [(Text, Value)] -> IO [Record]
+readAllOrEmpty call obj params = either (\(_ :: PluginError) -> []) id <$> try (readAll call obj params)
+
 readAll :: Call -> Text -> [(Text, Value)] -> IO [Record]
 readAll call obj params = do
   cols <- newIORef []

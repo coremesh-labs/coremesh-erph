@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.8.2 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.9.0 |
 
 ## Bauen, testen, starten
 
@@ -117,6 +117,11 @@ Sollstellung frühestens ab Vertragsbeginn, Beginn der Kondition und – seit 0.
 **„Sollstellung ab“** am Vertrag (`billing_start`, z. B. Übernahmestichtag aus einem Altsystem):
 Davor entstehen weder Sollstellungen noch Nachberechnungen.
 
+**Rückwirkend buchen ab** (seit 0.9.0, Steuerung des Buchungskreises im Hauptbuch,
+`LedgerCompanyConfig.backdate_from`): Nachberechnungen buchen sonst zum Tag des Laufs; mit
+gesetztem Datum zu ihrer ursprünglichen Fälligkeit – nicht vor diesem Datum, nicht nach dem
+Lauf. So lässt sich z. B. ein ganzes Jahr nachträglich durchbuchen (Simulation).
+
 | Regel | Inhalt |
 |---|---|
 | Perioden | Kalendermonat, Quartal (Jan/Apr/Jul/Okt), Halbjahr, Jahr; Beginn zur Monatsmitte = anteiliger erster Monat, keine eigenen Perioden |
@@ -162,7 +167,11 @@ Quellen (Einzelposten, gebuchte Eingangsrechnungen, gebuchte Vertragsabrechnunge
 Vorauszahlungen (`ContractPosting`, anteilig). Gerechnet wird ganzzahlig in Cent × Faktor auf
 internen Konten (Sammeln, Umbuchen, Verteilen, Zeitanteile, Rundung); jede Buchung trägt ihre
 Formel. Jede Sammelregel ordnet ihre Quelle nach Leistungs-/Abrechnungszeitraum, Buchungs-
-oder Belegdatum zu. Prüfungen: liegengebliebene Töpfe, Summe der Quellen = Mieter + Eigentümer,
+oder Belegdatum zu. Einzelposten ohne Mietobjekt gehören – seit 0.9.0 – über Gebäude bzw.
+Wirtschaftseinheit zur Einheit; welches Feld der Buchungszeile welches Objekt trägt, steht in der
+Objektkontierung der Beschaffung (`ObjectPosting`, Standard Gebäude `dimension_custom_1`,
+Wirtschaftseinheit `dimension_custom_2`). Ganz ohne Objekt zählt ein Einzelposten für jede
+Einheit, die das Konto sammelt. Prüfungen: liegengebliebene Töpfe, Summe der Quellen = Mieter + Eigentümer,
 Rundung, Vollständigkeit der Vertragsabrechnungen (Lücken, im Vorjahr abgerechnet und jetzt
 fehlend, erfasst und nicht gebucht – Fehler, `failures` in der Antwort).
 

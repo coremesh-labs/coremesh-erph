@@ -74,6 +74,9 @@ data Input = Input
   , inPartnerAccounts :: Map (Text, Text) PartnerAccount -- ^ (Partner, Rolle) → Buchungskreisdaten im Buchungskreis
   , inPosted :: [Posted] -- ^ schon vermerkte Sollstellungen (vorerfasst oder gebucht)
   , inCorrectionDate :: Day -- ^ Buchungsdatum der Nachberechnungen (Tag des Laufs)
+  , inBackdateFrom :: Maybe Day
+  -- ^ Buchungskreis „rückwirkend buchen ab“ (LedgerCompanyConfig.backdate_from): Nachberechnungen
+  -- buchen dann zu ihrer Fälligkeit, frühestens zu diesem Tag, höchstens zum Tag des Laufs
   }
 
 data Entry = Entry
@@ -190,7 +193,11 @@ plan until Input {..} = (concat docs, concat msgs)
             ]
        in originals <> corrections
 
-    asCorrection e = e {eDue = (eDue e) {dueDate = inCorrectionDate}, eKind = Correction}
+    asCorrection e = e {eDue = (eDue e) {dueDate = correctionDay (dueDate (eDue e))}, eKind = Correction}
+
+    -- Buchungsdatum einer Nachberechnung: Tag des Laufs; mit „rückwirkend buchen ab“
+    -- die ursprüngliche Fälligkeit (nicht vor der Grenze, nicht nach dem Lauf).
+    correctionDay due = maybe inCorrectionDate (\b -> min inCorrectionDate (max b due)) inBackdateFrom
 
     -- Nachberechnung einer Periode: Differenz zum Vermerkten, zum Tag des Laufs.
     -- Konto und Mietobjekt wie gerechnet, sonst wie zuletzt vermerkt (Kondition
@@ -205,7 +212,7 @@ plan until Input {..} = (concat docs, concat msgs)
             [] -> orphan c t o ps pe
        in Entry
             { eCondition = k
-            , eDue = Due ps pe ps pe inCorrectionDate diff
+            , eDue = Due ps pe ps pe (correctionDay (maybe ps (dueDate . eDue) (listToMaybe es))) diff
             , eRentObject = case es of
                 e : _ -> eRentObject e
                 [] -> lastPosted >>= pRentObject

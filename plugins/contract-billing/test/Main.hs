@@ -4,7 +4,7 @@ module Main (main) where
 import Control.Monad (unless)
 import Data.IORef
 import Data.Map.Strict qualified as Map
-import Data.List (sort)
+import Data.List (nub, sort)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Time.Calendar
@@ -151,6 +151,7 @@ planTests check = do
                 ]
           , inPosted = [booked "MV-1" "KM" "6000" 2026 1 80000]
           , inCorrectionDate = d 2026 2 20
+          , inBackdateFrom = Nothing
           }
       (docs, msgs) = plan (d 2026 2 28) input
       docOf cid date = [x | x <- docs, cId (dContract x) == cid, dDate x == date]
@@ -268,6 +269,12 @@ correctionTests check input booked cond = do
   let (mixed, _) = plan (d 2026 3 10) mv {inConditions = [cond "MV-1" "KM" "6000" 75000], inPosted = janFeb, inCorrectionDate = d 2026 3 3}
   check "gemischt: ein Beleg am 03.03. als Rechnung" [(d 2026 3 3, "DR")] [(dDate x, dDocumentType x) | x <- mixed]
 
+  -- Rückwirkend buchen ab 01.01.: Nachberechnung zur ursprünglichen Fälligkeit statt zum Lauftag
+  let (back, _) = plan (d 2026 2 28) mv {inConditions = [cond "MV-1" "KM" "6000" 75000], inPosted = janFeb, inBackdateFrom = Just (d 2026 1 1)}
+  check "rückwirkend: Gutschriften zu den Fälligkeiten" [d 2026 1 3, d 2026 2 3] (sort [dDate x | x <- back])
+  let (limit, _) = plan (d 2026 2 28) mv {inConditions = [cond "MV-1" "KM" "6000" 75000], inPosted = janFeb, inBackdateFrom = Just (d 2026 2 1)}
+  check "rückwirkend: nicht vor der Grenze" [d 2026 2 1, d 2026 2 3] (nub (sort [dDate x | x <- limit]))
+
   -- Kreditorenvertrag: Gutschrift mit der Belegart der Vertragsart
   let vs = input {inContracts = [inContracts input !! 1], inConditions = [cond "VS-1" "EN" "7300" 10000], inPosted = [booked "VS-1" "EN" "7300" 2026 1 12000]}
   check "Kreditor: Gutschrift-Belegart der Vertragsart" ["KX"] [dDocumentType x | x <- fst (plan (d 2026 1 31) vs)]
@@ -335,7 +342,7 @@ loanTests check = do
           , inContracts = [bank], inConditions = [], inObjects = [], inMeasurements = [], inAccounts = Map.empty, inFieldStatus = Map.empty
           , inLoans = [terms], inLoanPayments = []
           , inPartnerAccounts = Map.fromList [(("BANK", "CREDITOR"), PartnerAccount "BANK" "CREDITOR" (Just "1600") False)]
-          , inPosted = [], inCorrectionDate = d 2026 3 10
+          , inPosted = [], inCorrectionDate = d 2026 3 10, inBackdateFrom = Nothing
           }
       (docs, msgs) = plan (d 2026 2 28) input
   check "Darlehen: keine Meldungen" [] msgs

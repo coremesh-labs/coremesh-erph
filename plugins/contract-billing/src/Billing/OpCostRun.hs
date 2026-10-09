@@ -117,6 +117,17 @@ computeOpCostRun cache call p = do
         Map.fromList . map (\h -> ((text "document_number" h, text "fiscal_year" h), day "document_date" h))
           <$> readAll sys "JournalEntry" [("company_code_id", String cc)]
       else pure mempty
+  -- Objektkontierung im Hauptbuch (Beschaffung → ObjectPosting): welches Feld der
+  -- Buchungszeile welche Objektart trägt; Reihenfolge Mietobjekt, Gebäude, Wirtschaftseinheit.
+  objPostingRecs <- if null (collects "LEDGER") then pure [] else readAllOrEmpty sys "ObjectPosting" byCC
+  let objFields =
+        let configured = Map.fromList [(text "object_type" r, text "ledger_field" r) | r <- objPostingRecs, not (T.null (text "ledger_field" r))]
+            fields = Map.union configured (Map.fromList [("RentObject", "rent_object_id"), ("Building", "dimension_custom_1"), ("BusinessEntity", "dimension_custom_2")])
+         in [(t, f) | t <- ["RentObject", "Building", "BusinessEntity"], Just f <- [Map.lookup t fields]]
+      -- erstes gefülltes Objektfeld der Zeile; ohne Objekt: ganze Abrechnungseinheit
+      itemObject it = case [(t, v) | (t, f) <- objFields, let v = text f it, not (T.null v)] of
+        o : _ -> o
+        [] -> ("RentObject", "")
   ledgerSources <-
     concat
       <$> mapM
@@ -131,7 +142,8 @@ computeOpCostRun cache call p = do
               , inPeriod (fst dl)
               , T.null (text "ledger" it) || text "ledger" it == ledger
               , Just amt <- [int "amount_local_curr" it]
-              , Just tgt <- [target (textMaybe "rent_contract_id" it) "RentObject" (text "rent_object_id" it)]
+              , let (objType, objId) = itemObject it
+              , Just tgt <- [target (textMaybe "rent_contract_id" it) objType objId]
               , let ref = "JE:" <> docNo <> "/" <> text "line_item_number" it
                     formula = "Beleg " <> docNo <> " Pos. " <> text "line_item_number" it <> snd dl <> " " <> formatDay (fst dl) <> textSuffix (text "item_text" it)
               ]

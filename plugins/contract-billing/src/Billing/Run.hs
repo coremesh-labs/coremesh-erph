@@ -31,6 +31,7 @@ import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.List (nub)
+import Data.Maybe (listToMaybe)
 import Data.Map.Strict qualified as Map
 import Data.Ratio (denominator, numerator)
 import Data.Set qualified as Set
@@ -106,6 +107,9 @@ runBilling cache call RunRequest {..} = do
   -- Buchungskreisdaten der Partner (Abstimmkonto, Buchungssperre) – wie die Vermerke immer frisch
   partnerAccounts <- map partnerAccount <$> readAll sys "PartnerCompanyCode" [("company_code", String rrCompany)]
   today <- localDay . zonedTimeToLocalTime <$> getZonedTime
+  -- Steuerung des Buchungskreises im Hauptbuch: „rückwirkend buchen ab“
+  ledgerCfg <- readAllOrEmpty sys "LedgerCompanyConfig" [("company_code_id", String rrCompany)]
+  let backdateFrom = listToMaybe ledgerCfg >>= day "backdate_from"
   let input =
         Input
           { inTypes = Map.fromList [(ctCode t, t) | t <- types]
@@ -120,6 +124,7 @@ runBilling cache call RunRequest {..} = do
           , inPartnerAccounts = Map.fromList [((paPartner a, paRole a), a) | a <- partnerAccounts]
           , inPosted = postings
           , inCorrectionDate = min today rrTo
+          , inBackdateFrom = backdateFrom
           }
       (docs, planMsgs) = plan rrTo input
       msgs0 = badConditions <> badLoans <> planMsgs
