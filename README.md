@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.8.1 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.8.2 |
 
 ## Bauen, testen, starten
 

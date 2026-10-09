@@ -121,8 +121,8 @@ computeOpCostRun cache call p = do
     concat
       <$> mapM
         ( \r -> do
-            -- Regel: Konto mit Kontenplan-Präfix (SKR25-6300), Einzelposten ohne
-            items <- readAll sys "JournalEntryItem" [("company_code_id", String cc), ("account_number", String (shortAccount (ruSourceValue r)))]
+            -- Regel und Einzelposten: reine Kontonummer (ledger 0.15.0); der Filter des Hauptbuchs kürzt Altbestand mit Präfix
+            items <- readAll sys "JournalEntryItem" [("company_code_id", String cc), ("account_number", String (ruSourceValue r))]
             pure
               [ Source "LEDGER" (ruSourceValue r) ref amt tgt formula "" (ruNo r) Nothing
               | it <- items

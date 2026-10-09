@@ -21,7 +21,6 @@ module Billing.Data
   , contractObject
   , measurement
   , account
-  , shortAccount
   , posted
   , partnerAccount
   , loanTerms
@@ -299,13 +298,7 @@ measurement r = do
   pure (Measurement (text "object_id" r) (text "measurement_type" r) v from (until' "valid_to" r))
 
 account :: Record -> Account
-account r = Account (shortAccount (text "account_number" r)) (text "field_status_group" r) (bool "is_blocked" r)
-
--- | Kontonummer ohne Kontenplan-Präfix ("SKR25-1200" → "1200").
-shortAccount :: Text -> Text
-shortAccount a = case T.breakOnEnd "-" a of
-  ("", _) -> a
-  (_, n) -> n
+account r = Account (text "account_number" r) (text "field_status_group" r) (bool "is_blocked" r)
 
 fieldStatus :: [Record] -> FieldStatus
 fieldStatus rs = Map.fromList [((text "group_id" r, text "field_name" r), text "status" r) | r <- rs]
