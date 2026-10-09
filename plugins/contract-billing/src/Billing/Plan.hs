@@ -268,7 +268,7 @@ plan until Input {..} = (concat docs, concat msgs)
 
     entriesFor c k horizon = do
       acc <- maybe (Left ("Kondition " <> kType k <> ": Sachkonto fehlt (Kontenfindung)")) Right (kAccount k)
-      let from = max (kFrom k) (cFrom c)
+      let from = maximum (kFrom k : cFrom c : maybe [] pure (cBillingStart c))
           to = min (kTo k) (cTo c)
           valueAt d = measurementAt (kObject k) (maybe "" id (kMeasurement k)) d
           amountAt d

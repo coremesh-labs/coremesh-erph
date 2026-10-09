@@ -113,7 +113,7 @@ planTests check = do
           , ("VS", ContractType "VS" "PAYABLE" "CREDITOR" (Just "KR") (Just "KX") True)
           , ("XX", ContractType "XX" "RECEIVABLE" "GUARANTOR" Nothing Nothing False)
           ]
-      contract' cid typ = Contract "1000" cid typ "ACTIVE" "P1" "EUR" "" (d 2026 1 1) openEnd
+      contract' cid typ = Contract "1000" cid typ "ACTIVE" "P1" "EUR" "" (d 2026 1 1) openEnd Nothing
       cond cid typ acc amount =
         Condition cid typ "" False amount Nothing Monthly 3 Nothing 1 InAdvance (Just acc) Nothing (d 2026 1 1) openEnd
       -- Vermerk (vorerfasst oder gebucht) einer ganzen Monatsperiode
@@ -154,6 +154,9 @@ planTests check = do
           }
       (docs, msgs) = plan (d 2026 2 28) input
       docOf cid date = [x | x <- docs, cId (dContract x) == cid, dDate x == date]
+  -- Sollstellung ab (Übernahme): VS-1 erst ab 01.02., Januar entfällt
+  let (late, _) = plan (d 2026 2 28) input {inContracts = [(contract' "VS-1" "VS") {cBillingStart = Just (d 2026 2 1)}], inPosted = []}
+  check "Sollstellung ab: nur Februar" [d 2026 2 3] [dDate x | x <- late]
   check "Meldung ohne Partnerkonto" [("XX-1", "Partnerkonto fehlt: P1 hat in der Rolle GUARANTOR keine Buchungskreisdaten (Partnermodul) – Vertrag nicht gebucht")] msgs
   -- Januar KM schon gebucht: die Minderung für Januar ist nachträglich (Nachberechnung am Lauftag), im Februar beides
   check "schon Gebuchtes übersprungen" 0 (length (docOf "MV-1" (d 2026 1 3)))
@@ -325,7 +328,7 @@ loanTests check = do
   check "Übernahme ohne Auszahlung" [] [r | r <- plan' [terms {lnTakeover = True}] [] openEnd (d 2026 3 1), rKind r == Disbursement]
 
   -- Einbindung: Darlehensvertrag (wir zahlen) – Auszahlung, Zins, Tilgung gegen die Bank
-  let bank = Contract "1000" "DA-1" "DA" "ACTIVE" "BANK" "EUR" "" (d 2026 1 1) openEnd
+  let bank = Contract "1000" "DA-1" "DA" "ACTIVE" "BANK" "EUR" "" (d 2026 1 1) openEnd Nothing
       input =
         Input
           { inTypes = Map.fromList [("DA", ContractType "DA" "PAYABLE" "CREDITOR" (Just "KR") Nothing True)]

@@ -119,6 +119,7 @@ data Contract = Contract
   , cDesignation :: Text
   , cFrom :: Day
   , cTo :: Day
+  , cBillingStart :: Maybe Day -- ^ Sollstellung ab (z. B. Übernahme aus einem Altsystem); leer = Beginn
   }
   deriving stock (Show)
 
@@ -252,6 +253,7 @@ contract r = do
       , cDesignation = text "designation" r
       , cFrom = from
       , cTo = until' "valid_to" r
+      , cBillingStart = day "billing_start" r
       }
 
 condition :: Record -> Either Text Condition

@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.8.0 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.8.1 |
 
 ## Bauen, testen, starten
 
@@ -112,6 +112,10 @@ vor jedem Lauf die offenen Vorerfassungen ab (Events gehen höchstens einmal zu)
   `Contract.read` je Buchungskreis und Vertragsart); die Buchung selbst prüft der Ledger.
 
 ### Fälligkeiten
+
+Sollstellung frühestens ab Vertragsbeginn, Beginn der Kondition und – seit 0.8.1 – dem Feld
+**„Sollstellung ab“** am Vertrag (`billing_start`, z. B. Übernahmestichtag aus einem Altsystem):
+Davor entstehen weder Sollstellungen noch Nachberechnungen.
 
 | Regel | Inhalt |
 |---|---|
