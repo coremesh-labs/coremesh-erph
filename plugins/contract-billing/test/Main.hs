@@ -75,6 +75,9 @@ main = do
   check "jährlich" [d 2026 1 1, d 2027 1 1] (dates (dues Yearly InAdvance 1 (fixed 5) (d 2026 1 1) (d 2027 12 31) (d 2027 6 1)))
   check "Halbjahr" [(d 2026 7 1, d 2026 12 31)] [periodOf HalfYearly (d 2026 9 9)]
   check "zweimonatlich" [(d 2026 3 1, d 2026 4 30), (d 2026 1 1, d 2026 2 28)] [periodOf Bimonthly (d 2026 3 17), periodOf Bimonthly (d 2026 2 2)]
+  check "Versicherungsjahr Okt–Sep" [(d 2026 10 1, d 2027 9 30), (d 2025 10 1, d 2026 9 30)] [periodFrom 10 Yearly (d 2026 10 1), periodFrom 10 Yearly (d 2026 9 21)]
+  check "Quartal ab Feb" [(d 2026 2 1, d 2026 4 30), (d 2025 11 1, d 2026 1 31)] [periodFrom 2 Quarterly (d 2026 3 5), periodFrom 2 Quarterly (d 2026 1 9)]
+  check "jährlich ab Okt: fällig 01.10." [(d 2025 10 1, 8925), (d 2026 10 1, 8925)] [(dueDate x, dueAmount x) | x <- duesFrom 10 Yearly InAdvance 1 (const 8925) (d 2025 10 1) openEnd (d 2026 12 31)]
 
   -- Einmalig: am Beginn, voller Betrag
   check "einmalig" [Due (d 2026 5 5) (d 2026 5 5) (d 2026 5 5) (d 2026 5 5) (d 2026 5 5) 777] (dues Once InAdvance 1 (fixed 777) (d 2026 5 5) (d 2026 12 31) (d 2026 6 1))
@@ -118,7 +121,7 @@ planTests check = do
           ]
       contract' cid typ = Contract "1000" cid typ "ACTIVE" "P1" "EUR" "" (d 2026 1 1) openEnd Nothing
       cond cid typ acc amount =
-        Condition cid typ "" False amount Nothing Monthly 3 Nothing 1 InAdvance (Just acc) Nothing (d 2026 1 1) openEnd
+        Condition cid typ "" False amount Nothing Monthly 3 1 Nothing 1 InAdvance (Just acc) Nothing (d 2026 1 1) openEnd
       -- Vermerk (vorerfasst oder gebucht) einer ganzen Monatsperiode
       booked cid typ acc y m amount =
         Posted cid typ "" (d y m 1) (d y m (gregorianMonthLength y m)) (Just (d y m 1)) (d y m 3) amount Original acc (Just "WG001")

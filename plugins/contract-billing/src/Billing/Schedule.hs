@@ -1,8 +1,9 @@
 -- | Fälligkeiten einer Kondition: Perioden, anteilige Beträge, Fälligkeitstage.
 -- Reine Funktionen ohne Ein-/Ausgabe.
 --
---   * Perioden sind Kalenderperioden: Monat, Quartal (ab Jan/Apr/Jul/Okt),
---     Halbjahr (ab Jan/Jul), Jahr. Einmalig: ein Tag, der Beginn der Kondition;
+--   * Perioden sind Kalenderperioden: Monat, zwei Monate, Quartal (ab
+--     Jan/Apr/Jul/Okt), Halbjahr (ab Jan/Jul), Jahr – oder ab einem eigenen
+--     Startmonat (z. B. Versicherungsjahr Oktober bis September). Einmalig: ein Tag, der Beginn der Kondition;
 --     fällig am Beginn oder an einem eigenen Fälligkeitsdatum ("dueOnce").
 --   * Deckt die Kondition nur einen Teil einer Periode ab (Beginn am 15.,
 --     Anpassung mitten im Monat, Kündigung), ist der Betrag tagesgenau anteilig
@@ -18,6 +19,8 @@ module Billing.Schedule
   , dues
   , dueOnce
   , periodOf
+  , periodFrom
+  , duesFrom
   , prorate
   , roundDiv
   ) where
@@ -43,7 +46,12 @@ data Due = Due
 
 -- | Kalenderperiode, die den Tag enthält.
 periodOf :: Frequency -> Day -> (Day, Day)
-periodOf f d =
+periodOf = periodFrom 1
+
+-- | Periode, die den Tag enthält, mit Periodenbeginn im Monat startMonth
+-- (1 = Kalender: Quartal ab Jan/Apr/Jul/Okt; 10 = Versicherungsjahr Okt–Sep).
+periodFrom :: Int -> Frequency -> Day -> (Day, Day)
+periodFrom startMonth f d =
   let (y, m, _) = toGregorian d
       months = case f of
         Monthly -> 1
@@ -52,9 +60,11 @@ periodOf f d =
         HalfYearly -> 6
         Yearly -> 12
         Once -> 1
-      startMonth = ((m - 1) `div` months) * months + 1
-      start = fromGregorian y startMonth 1
-      end = addDays (-1) (addGregorianMonthsClip (fromIntegral months) start)
+      base = toInteger ((max 1 (min 12 startMonth) - 1) `mod` months)
+      idx = y * 12 + toInteger (m - 1) -- fortlaufende Monatsnummer
+      startIdx = ((idx - base) `div` toInteger months) * toInteger months + base
+      start = fromGregorian (startIdx `div` 12) (fromInteger (startIdx `mod` 12) + 1) 1
+      end = addDays (-1) (addGregorianMonthsClip (toInteger months) start)
    in case f of
         Once -> (d, d)
         _ -> (start, end)
@@ -82,17 +92,21 @@ dayInMonth y m d = fromGregorian y m (min d (gregorianMonthLength y m))
 -- Fälligkeitsdatum bis horizon. amountAt liefert den Betrag einer vollen
 -- Periode für den abgedeckten Teil (z. B. Preis je m² × Fläche am Beginn).
 dues :: Frequency -> PaymentMode -> Int -> (Day -> Integer) -> Day -> Day -> Day -> [Due]
-dues Once _ _ amountAt from to horizon
+dues = duesFrom 1
+
+-- | Wie dues, Perioden ab dem Monat startMonth (siehe periodFrom).
+duesFrom :: Int -> Frequency -> PaymentMode -> Int -> (Day -> Integer) -> Day -> Day -> Day -> [Due]
+duesFrom _ Once _ _ amountAt from to horizon
   | from <= to && from <= horizon = [Due from from from from from (amountAt from)]
   | otherwise = []
-dues f mode dueDay amountAt from to horizon = go (fst (periodOf f from))
+duesFrom sm f mode dueDay amountAt from to horizon = go (fst (periodFrom sm f from))
   where
     go ps
       | ps > to = []
       | date > horizon = [] -- Fälligkeiten steigen mit der Periode
       | otherwise = Due a b ps pe date (prorate (amountAt a) (ps, pe) (a, b)) : go (addDays 1 pe)
       where
-        pe = snd (periodOf f ps)
+        pe = snd (periodFrom sm f ps)
         a = max ps from
         b = min pe to
         date = case mode of
