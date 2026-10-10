@@ -165,6 +165,13 @@ planTests check = do
   -- Sollstellung ab (Übernahme): VS-1 erst ab 01.02., Januar entfällt
   let (late, _) = plan (d 2026 2 28) input {inContracts = [(contract' "VS-1" "VS") {cBillingStart = Just (d 2026 2 1)}], inPosted = []}
   check "Sollstellung ab: nur Februar" [d 2026 2 3] [dDate x | x <- late]
+  -- Versicherungsjahr Okt–Sep, Kondition seit Okt 2025, Sollstellung ab 01.01.2026:
+  -- die im Altsystem fällige Prämie (01.10.2025) entfällt, keine anteilige Periode ab Januar
+  let ins = (cond "VS-1" "EN" "7300" 8925) {kFrequency = Yearly, kDueDay = 1, kStartMonth = 10, kFrom = d 2025 10 1}
+      (yr, _) = plan (d 2027 12 31) input {inContracts = [(contract' "VS-1" "VS") {cFrom = d 2014 10 1, cBillingStart = Just (d 2026 1 1)}],
+                                           inConditions = [ins], inPosted = []}
+  check "Versicherungsjahr: fällig 01.10., volle Prämie" [(d 2026 10 1, 8925), (d 2027 10 1, 8925)]
+    [(dDate x, sum (map (dueAmount . eDue) (dEntries x))) | x <- yr]
   check "Meldung ohne Partnerkonto" [("XX-1", "Partnerkonto fehlt: P1 hat in der Rolle GUARANTOR keine Buchungskreisdaten (Partnermodul) – Vertrag nicht gebucht")] msgs
   -- Januar KM schon gebucht: die Minderung für Januar ist nachträglich (Nachberechnung am Lauftag), im Februar beides
   check "schon Gebuchtes übersprungen" 0 (length (docOf "MV-1" (d 2026 1 3)))

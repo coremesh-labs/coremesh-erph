@@ -297,13 +297,18 @@ plan until Input {..} = (concat docs, concat msgs)
 
     entriesFor c k horizon = do
       acc <- maybe (Left ("Kondition " <> kType k <> ": Sachkonto fehlt (Kontenfindung)")) Right (kAccount k)
-      let from = maximum (kFrom k : cFrom c : maybe [] pure (cBillingStart c))
+      -- Perioden ab dem echten Beginn; „Sollstellung ab“ (Übernahme aus einem
+      -- Altsystem) übernimmt die Fälligkeiten ab diesem Tag – je volle Periode.
+      -- Früher Fälliges ist im Altsystem erledigt (z. B. Versicherungsjahr
+      -- Okt–Sep, im September bezahlt: keine anteilige Periode ab Januar).
+      let from = max (kFrom k) (cFrom c)
+          billedFrom = maybe from id (cBillingStart c)
           to = min (kTo k) (cTo c)
           valueAt d = measurementAt (kObject k) (maybe "" id (kMeasurement k)) d
           amountAt d
             | kPerUnit k = maybe 0 (\v -> roundScientific (fromInteger (kAmount k) * v)) (valueAt d)
             | otherwise = kAmount k
-          ds = case kFrequency k of
+          ds = filter ((>= billedFrom) . dueDate) $ case kFrequency k of
             Once -> dueOnce (kInstallments k) (kDueDate k) amountAt from to horizon
             f -> duesFrom (kStartMonth k) f (kMode k) (kDueDay k) amountAt from to horizon
           missing = [dueFrom x | kPerUnit k, x <- ds, dueDate x <= until, isNothing (valueAt (dueFrom x))]
