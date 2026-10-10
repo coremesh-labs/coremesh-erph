@@ -263,6 +263,7 @@ condition r = do
   amount <- maybe (Left "Betrag fehlt") Right (int "amount" r)
   freq <- case text "frequency" r of
     "MONTHLY" -> Right Monthly
+    "BIMONTHLY" -> Right Bimonthly
     "QUARTERLY" -> Right Quarterly
     "HALF_YEARLY" -> Right HalfYearly
     "YEARLY" -> Right Yearly
@@ -319,6 +320,7 @@ loanTerms r = do
     t -> Left ("unbekannte Tilgungsart " <> t)
   freq <- case text "frequency" r of
     "MONTHLY" -> Right Monthly
+    "BIMONTHLY" -> Right Bimonthly
     "QUARTERLY" -> Right Quarterly
     "HALF_YEARLY" -> Right HalfYearly
     "YEARLY" -> Right Yearly

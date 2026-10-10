@@ -109,6 +109,7 @@ yearFraction dc a b = case dc of
 months :: Frequency -> Integer
 months = \case
   Monthly -> 1
+  Bimonthly -> 2
   Quarterly -> 3
   HalfYearly -> 6
   Yearly -> 12

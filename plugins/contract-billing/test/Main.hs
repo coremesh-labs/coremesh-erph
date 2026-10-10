@@ -74,6 +74,7 @@ main = do
   -- Jährlich, Halbjahr
   check "jährlich" [d 2026 1 1, d 2027 1 1] (dates (dues Yearly InAdvance 1 (fixed 5) (d 2026 1 1) (d 2027 12 31) (d 2027 6 1)))
   check "Halbjahr" [(d 2026 7 1, d 2026 12 31)] [periodOf HalfYearly (d 2026 9 9)]
+  check "zweimonatlich" [(d 2026 3 1, d 2026 4 30), (d 2026 1 1, d 2026 2 28)] [periodOf Bimonthly (d 2026 3 17), periodOf Bimonthly (d 2026 2 2)]
 
   -- Einmalig: am Beginn, voller Betrag
   check "einmalig" [Due (d 2026 5 5) (d 2026 5 5) (d 2026 5 5) (d 2026 5 5) (d 2026 5 5) 777] (dues Once InAdvance 1 (fixed 777) (d 2026 5 5) (d 2026 12 31) (d 2026 6 1))

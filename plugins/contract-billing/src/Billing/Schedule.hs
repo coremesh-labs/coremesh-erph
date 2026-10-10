@@ -24,7 +24,7 @@ module Billing.Schedule
 
 import Data.Time.Calendar
 
-data Frequency = Monthly | Quarterly | HalfYearly | Yearly | Once
+data Frequency = Monthly | Bimonthly | Quarterly | HalfYearly | Yearly | Once
   deriving stock (Eq, Show, Read)
 
 data PaymentMode = InAdvance | InArrears
@@ -47,6 +47,7 @@ periodOf f d =
   let (y, m, _) = toGregorian d
       months = case f of
         Monthly -> 1
+        Bimonthly -> 2
         Quarterly -> 3
         HalfYearly -> 6
         Yearly -> 12
