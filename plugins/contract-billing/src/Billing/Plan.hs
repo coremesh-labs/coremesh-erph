@@ -272,7 +272,7 @@ plan until Input {..} = (concat docs, concat msgs)
     loanCondition c typ acc freq row =
       Condition
         { kContract = cId c, kType = typ, kObject = "", kPerUnit = False, kAmount = 0, kMeasurement = Nothing
-        , kFrequency = freq, kDueDay = 1, kStartMonth = 1, kDueDate = Nothing, kInstallments = 1, kMode = InAdvance, kAccount = Just acc
+        , kFrequency = freq, kDueDay = 1, kStartMonth = 1, kDueMonth = 1, kDueDate = Nothing, kInstallments = 1, kMode = InAdvance, kAccount = Just acc
         , kPayer = Nothing, kFrom = rFrom row, kTo = rTo row
         }
 
@@ -280,7 +280,7 @@ plan until Input {..} = (concat docs, concat msgs)
     orphan c t o ps pe =
       Condition
         { kContract = cId c, kType = t, kObject = o, kPerUnit = False, kAmount = 0, kMeasurement = Nothing
-        , kFrequency = Monthly, kDueDay = 1, kStartMonth = 1, kDueDate = Nothing, kInstallments = 1, kMode = InAdvance, kAccount = Nothing, kPayer = Nothing
+        , kFrequency = Monthly, kDueDay = 1, kStartMonth = 1, kDueMonth = 1, kDueDate = Nothing, kInstallments = 1, kMode = InAdvance, kAccount = Nothing, kPayer = Nothing
         , kFrom = ps, kTo = pe
         }
 
@@ -310,7 +310,7 @@ plan until Input {..} = (concat docs, concat msgs)
             | otherwise = kAmount k
           ds = filter ((>= billedFrom) . dueDate) $ case kFrequency k of
             Once -> dueOnce (kInstallments k) (kDueDate k) amountAt from to horizon
-            f -> duesFrom (kStartMonth k) f (kMode k) (kDueDay k) amountAt from to horizon
+            f -> duesFrom (kStartMonth k) (kDueMonth k) f (kMode k) (kDueDay k) amountAt from to horizon
           missing = [dueFrom x | kPerUnit k, x <- ds, dueDate x <= until, isNothing (valueAt (dueFrom x))]
       case missing of
         d : _ ->

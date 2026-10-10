@@ -92,14 +92,16 @@ dayInMonth y m d = fromGregorian y m (min d (gregorianMonthLength y m))
 -- Fälligkeitsdatum bis horizon. amountAt liefert den Betrag einer vollen
 -- Periode für den abgedeckten Teil (z. B. Preis je m² × Fläche am Beginn).
 dues :: Frequency -> PaymentMode -> Int -> (Day -> Integer) -> Day -> Day -> Day -> [Due]
-dues = duesFrom 1
+dues = duesFrom 1 1
 
--- | Wie dues, Perioden ab dem Monat startMonth (siehe periodFrom).
-duesFrom :: Int -> Frequency -> PaymentMode -> Int -> (Day -> Integer) -> Day -> Day -> Day -> [Due]
-duesFrom _ Once _ _ amountAt from to horizon
+-- | Wie dues, Perioden ab dem Monat startMonth (siehe periodFrom); vorschüssig
+-- fällig im dueMonth-ten Monat der Periode (1 = erster), z. B. Jahresmiete für
+-- Jan–Dez, fällig am 15.03.
+duesFrom :: Int -> Int -> Frequency -> PaymentMode -> Int -> (Day -> Integer) -> Day -> Day -> Day -> [Due]
+duesFrom _ _ Once _ _ amountAt from to horizon
   | from <= to && from <= horizon = [Due from from from from from (amountAt from)]
   | otherwise = []
-duesFrom sm f mode dueDay amountAt from to horizon = go (fst (periodFrom sm f from))
+duesFrom sm dm f mode dueDay amountAt from to horizon = go (fst (periodFrom sm f from))
   where
     go ps
       | ps > to = []
@@ -111,8 +113,8 @@ duesFrom sm f mode dueDay amountAt from to horizon = go (fst (periodFrom sm f fr
         b = min pe to
         date = case mode of
           InAdvance ->
-            let (y, m, _) = toGregorian ps
-             in max a (dayInMonth y m dueDay)
+            let (y, m, _) = toGregorian (addGregorianMonthsClip (toInteger (max 1 dm - 1)) ps)
+             in max a (min pe (dayInMonth y m dueDay))
           InArrears ->
             let (y, m, _) = toGregorian (addDays 1 pe)
              in dayInMonth y m dueDay

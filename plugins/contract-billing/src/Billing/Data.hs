@@ -134,6 +134,7 @@ data Condition = Condition
   , kFrequency :: Frequency
   , kDueDay :: Int
   , kStartMonth :: Int -- ^ Periodenbeginn (1 = Kalender), z. B. 10 = Okt–Sep
+  , kDueMonth :: Int -- ^ vorschüssig fällig im n-ten Monat der Periode (1 = erster)
   , kDueDate :: Maybe Day -- ^ nur einmalig: Fälligkeit (leer = Beginn)
   , kInstallments :: Int -- ^ nur einmalig: Monatsraten (Standard 1)
   , kMode :: PaymentMode
@@ -282,6 +283,7 @@ condition r = do
       , kFrequency = freq
       , kDueDay = maybe 1 fromInteger (int "due_day" r)
       , kStartMonth = maybe 1 fromInteger (int "period_start_month" r)
+      , kDueMonth = maybe 1 fromInteger (int "due_month" r)
       , kDueDate = day "due_date" r
       , kInstallments = maybe 1 fromInteger (int "installments" r)
       , kMode = mode
