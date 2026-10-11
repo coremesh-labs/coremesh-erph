@@ -89,7 +89,8 @@ runBilling cache call RunRequest {..} = do
   let ids = Set.fromList (map cId contracts)
       mine :: (a -> Text) -> [a] -> [a]
       mine f = filter ((`Set.member` ids) . f)
-  condRecs <- get Conditions
+  -- Rechnungsvorlagen (is_template, z. B. am Rahmenvertrag) erzeugen keine Sollstellung.
+  condRecs <- filter (not . bool "is_template") <$> get Conditions
   let parsed = [(text "contract_id" r, condition r) | r <- condRecs]
       conditions = mine kContract [k | (_, Right k) <- parsed]
       badConditions = [(c, "Kondition nicht lesbar: " <> e) | (c, Left e) <- parsed, c `Set.member` ids]
