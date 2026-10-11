@@ -39,7 +39,7 @@ callbackObject = "ContractBillingCache"
 
 billingPlugin :: Cache -> Plugin
 billingPlugin cache =
-  (defaultPlugin "contract-billing" "0.13.0")
+  (defaultPlugin "contract-billing" "0.13.1")
     { pluginDescription = "Vertragsbuchung: Sollstellung der Verträge über die Vorerfassung des Hauptbuchs"
     , pluginCapabilities =
         [ Capability "ContractBilling" ["run", "loanSchedule", "depreciationSchedule", "checkSettlement", "postSettlement", "computeOpCost", "refresh", "cache"] []
@@ -92,7 +92,8 @@ handler cache call req = case (reqObject req, reqAction req) of
   ("ContractBilling", "loanSchedule") -> do
     cc <- required "company_code" "Buchungskreis"
     cid <- required "contract_id" "Vertrag"
-    response <$> loanPlan cache call cc cid
+    -- seit 0.13.1: Plan bis (until, JJJJ-MM-TT; leer = Rückzahlung bzw. Vertragsende)
+    response <$> loanPlan cache call cc cid (day "until" p)
   (_, a) | a `elem` ["checkSettlement", "postSettlement"] -> do
     cc <- required "company_code" "Buchungskreis"
     cid <- required "contract_id" "Vertrag"

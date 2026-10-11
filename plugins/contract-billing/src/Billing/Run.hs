@@ -343,8 +343,8 @@ tshow = T.pack . show
 
 -- | Tilgungsplan eines Darlehensvertrags (Aktion „Tilgungsplan“): alle Zeilen
 -- bis zur Rückzahlung bzw. zum Vertragsende, als Tabelle.
-loanPlan :: Cache -> Call -> Text -> Text -> IO Value
-loanPlan cache call cc contractId = do
+loanPlan :: Cache -> Call -> Text -> Text -> Maybe Day -> IO Value
+loanPlan cache call cc contractId until = do
   sys <- systemCall call (callTenantId call)
   let get = slice cache sys cc
   terms <- concatMap (either (const []) pure . loanTerms) <$> get Loans
@@ -357,7 +357,8 @@ loanPlan cache call cc contractId = do
     (_, []) -> pluginError NotFound ("Vertrag " <> contractId <> " gibt es im Buchungskreis " <> cc <> " nicht")
     (_, k : _) -> do
       dec <- currencyDecimals call (cCurrency k)
-      let rows = schedule mineL [p | p <- payments, lpContract p == contractId] (cTo k) (fromGregorian 2199 12 31)
+      let horizon = maybe (fromGregorian 2199 12 31) id until
+          rows = [r | r <- schedule mineL [p | p <- payments, lpContract p == contractId] (cTo k) horizon, maybe True (rDue r <=) until]
           amt = formatAmount dec
           kind r = case rKind r of
             Disbursement -> "Auszahlung" :: Text
