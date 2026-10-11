@@ -1,0 +1,16 @@
+plugins:
+  # GuV-Rechnung: Gewinn und Verlust je Buchungskreis, Mietobjekt und Zeitraum aus
+  # den Einzelposten des Hauptbuchs (ledger). Liest mit den Rechten des Benutzers,
+  # speichert nichts; Ergebnis auf dem Bildschirm und als CSV.
+  profit-loss:
+    version: 0.1.0
+    settings:
+      ledger: 0L                     # Ledger der Einzelposten (führendes Ledger)
+      # Bereiche der GuV: Kontotypen des Kontenplans (GLAccount.account_type);
+      # INCOME zeigt Haben positiv (Erträge), EXPENSE Soll positiv (Aufwand).
+      # Ergebnis = Erträge − Aufwendungen. Bestandskonten (BALANCE_SHEET) gehören nicht hinein.
+      sections:
+        - { title: Erlöse, side: INCOME, account_types: [REVENUE] }
+        - { title: Aufwendungen, side: EXPENSE, account_types: [PRIMARY_COST] }
+        - { title: Sekundäre Kosten, side: EXPENSE, account_types: [SECONDARY_COST] }
+        - { title: Neutrales Ergebnis, side: INCOME, account_types: [NON_OPERATING] }

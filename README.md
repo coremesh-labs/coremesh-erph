@@ -20,7 +20,8 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.10.0 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.12.1 |
+| `profit-loss` | `ProfitLoss` | GuV-Rechnung je Buchungskreis, Mietobjekt und Zeitraum aus den Einzelposten des Hauptbuchs – Bildschirm und CSV, nichts wird gespeichert | 0.1.0 |
 
 ## Bauen, testen, starten
 
@@ -264,3 +265,27 @@ Seit 0.2.0 liegen die eigenen Tabellen `contract_billing__*` von 0.1.0 leer in d
 - Minderung in Prozent einer anderen Kondition (heute: fester Betrag).
 - Stornos im Hauptbuch berücksichtigen (ein stornierter Sollstellungsbeleg gilt noch als vermerkt).
 - Nebenkostenabrechnung: Schlüssel Verbrauch (Zähler), Mieterschreiben.
+
+## GuV-Rechnung (`profit-loss`)
+
+Menü **GuV → GuV-Rechnung** (`/m/profit-loss/ProfitLoss`): Maske mit Buchungskreis,
+Mietobjekt (leer = alle) und Zeitraum (Vorschlag: laufendes Jahr bis heute). „GuV berechnen“
+zeigt darunter Bereiche, Konten, Summen und das Ergebnis (Gewinn +, Verlust −) und bietet die
+Tabelle als CSV zum Speichern an (Semikolon, Dezimalkomma, UTF-8 mit BOM für Tabellenkalkulationen).
+Nichts wird gespeichert. Der WebServer (ab 0.33.0) zeigt ein Object ohne Übersicht als Bericht.
+
+Gelesen wird mit den Rechten des Benutzers: Sachkonten (`GLAccountCompany`, `GLAccount`) und
+Einzelposten (`JournalEntryItem`, Ledger aus `settings.ledger`, Buchungsdatum im Zeitraum,
+Mietobjekt über die Dimension `rent_object_id`). Welche Kontotypen in welchen Bereich gehören
+und ob ein Bereich Ertrag (`INCOME`, Haben positiv) oder Aufwand (`EXPENSE`, Soll positiv) ist,
+steht in `configs/70-profit-loss.yaml` (`settings.sections`).
+
+| Modul | Inhalt |
+|---|---|
+| `ProfitLoss.Report` | Einzelposten → Bereiche, Summen, Ergebnis, Tabelle, CSV, Beträge deutsch (rein) |
+| `ProfitLoss.Meta` | Metamodell (Catalog.Describe): Modul, Object, Maske, Übersetzungen |
+| `ProfitLoss.Api` | Object `ProfitLoss` (compute, formState), Einstellungen, Lesen aus dem Hauptbuch |
+
+Tests (`cabal test profit-loss:test:spec`): Zeitraum, Bilanz- und unbekannte Konten, Storno
+(Konto ohne Bewegung entfällt), Vorzeichen je Bereich, Ergebnis, Tabelle, Beträge, CSV-Maskierung,
+eigene Bereiche aus den Einstellungen.
