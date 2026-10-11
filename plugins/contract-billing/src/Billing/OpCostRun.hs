@@ -167,12 +167,14 @@ computeOpCostRun cache call p = do
           [ Source "INVOICE" (ruSourceValue r) ref amt tgt formula "" (ruNo r) warning
           | r <- collects "INVOICE"
           , it <- items
+          , T.null (text "dependent_type" it) -- nachgelagerte Positionen stecken im Kostenbetrag der Basis
           , text "cost_category" it == ruSourceValue r
           , Just h <- [Map.lookup (text "invoice_id" it) heads]
           , let (objType, objId) =
                   if T.null (text "object_id" it) then (text "object_type" h, text "object_id" h) else (text "object_type" it, text "object_id" it)
           , Just tgt <- [target (textMaybe "contract_id" it) objType objId]
-          , Just total <- [int "amount" it]
+          -- seit 0.13.0: Kostenbetrag (netto − Anteil + verteilte Zuschläge und nicht abziehbare Steuer), sonst Betrag
+          , Just total <- [maybe (int "amount" it) Just (int "cost_amount" it)]
           , Just (amt, part, warning) <- [assign r h it total]
           , let ref = "INV:" <> text "invoice_id" it <> "/" <> text "line_no" it
                 formula =

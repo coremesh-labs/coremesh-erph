@@ -38,6 +38,7 @@ import CoreMesh.Plugin
 
 -- | Ausschnitte der Stammdaten.
 data Slice = Types | Contracts | Conditions | Objects | Measurements | Accounts | FieldStatuses | Loans | LoanPayments | Depreciations
+  | ConditionTypes | DependentTypes | TaxCodes | RoundingRules
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 -- | Quelle: Object, Filterfeld des Buchungskreises (Nothing = gilt für alle), mit Historie.
@@ -53,6 +54,10 @@ source = \case
   Loans -> ("ContractLoan", Just "company_code", True)
   LoanPayments -> ("ContractLoanPayment", Just "company_code", False)
   Depreciations -> ("ContractDepreciation", Just "company_code", True)
+  ConditionTypes -> ("ConditionType", Just "company_code", False)
+  DependentTypes -> ("ContractDependentType", Just "company_code", False)
+  TaxCodes -> ("TaxCode", Nothing, False)
+  RoundingRules -> ("RoundingRule", Nothing, False)
 
 -- | Objects, deren Events den Cache betreffen (für SystemEvent.Register).
 watched :: [Text]

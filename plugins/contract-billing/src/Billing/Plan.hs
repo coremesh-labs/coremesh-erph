@@ -57,6 +57,7 @@ import Data.Time.Calendar
 import Billing.Data
 import Billing.Depreciation
 import Billing.Loan
+import Billing.Pricing
 import Billing.Schedule
 
 -- | Abgleich: Vertrag, Konditionsart, Objekt, Beginn der Kalenderperiode.
@@ -77,6 +78,12 @@ data Input = Input
   , inPosted :: [Posted] -- ^ schon vermerkte Sollstellungen (vorerfasst oder gebucht)
   , inCorrectionDate :: Day -- ^ Buchungsdatum der Nachberechnungen (Tag des Laufs)
   , inBackdateFrom :: Maybe Day
+  , inConditionTypes :: Map Text CondType -- ^ seit 0.13.0: Steuerkennzeichen und Rundungsregel je Konditionsart
+  , inDependentTypes :: Map Text Dependent -- ^ nachgelagerte Konditionsarten
+  , inTaxCodes :: Map Text TaxCode
+  , inRoundings :: Map Text Rounding -- ^ Rundungsregeln (Hauptbuch)
+  , inCompanyRounding :: Maybe Text -- ^ Rundungsregel des Buchungskreises
+  , inDecimals :: Map Text Int -- ^ Nachkommastellen je Währung
   -- ^ Buchungskreis „rückwirkend buchen ab“ (LedgerCompanyConfig.backdate_from): Nachberechnungen
   -- buchen dann zu ihrer Fälligkeit, frühestens zu diesem Tag, höchstens zum Tag des Laufs
   }
@@ -157,13 +164,16 @@ plan until Input {..} = (concat docs, concat msgs)
               -- Auch Perioden rechnen, die schon vermerkt sind, aber (z. B. nach
               -- geändertem Fälligkeitstag) erst nach dem Stichtag fällig wären.
               horizon = maximum (until : [addDays 400 (pTo p) | p <- postings])
-              results = [(k, entriesFor c k horizon) | k <- conds]
-              candidates = concat [es | (_, Right es) <- results] <> loanEntries c horizon <> depEntries c horizon
-              failed = Set.fromList [(kType k, kObject k) | (k, Left _) <- results]
+              results = [(k, entriesFor c k horizon) | k <- conds, isNothing (kDependent k)]
+              -- nachgelagerte Konditionen aus den Fälligkeiten der anderen (Anteil: aus der Basis herausgerechnet)
+              (baseEntries, dependentEs, depErrors) = dependents c [k | k <- conds, isJust (kDependent k)] (concat [es | (_, Right es) <- results])
+              own = baseEntries <> loanEntries c horizon <> depEntries c horizon
+              candidates = own <> dependentEs
+              failed = Set.fromList ([(kType k, kObject k) | (k, Left _) <- results] <> [(kType k, kObject k) | (k, _) <- depErrors])
               -- Gleiche Fälligkeit zweimal = Zeitscheiben einer Kondition überschneiden sich (Datenfehler).
-              clashes = Map.keys (Map.filter (> (1 :: Int)) (Map.fromListWith (+) [(entryKey e, 1) | e <- candidates]))
+              clashes = Map.keys (Map.filter (> (1 :: Int)) (Map.fromListWith (+) [(entryKey e, 1) | e <- own]))
               overlap = [(cId c, "Kondition " <> t <> ": Zeitscheiben überschneiden sich (" <> formatDay from <> ") – Vertrag nicht gebucht") | (_, t, _, from) <- clashes]
-              errors = [(cId c, e) | (_, Left e) <- results] <> overlap
+              errors = [(cId c, e) | (_, Left e) <- results] <> [(cId c, e) | (_, e) <- depErrors] <> overlap
               entries = if null clashes then reconcile c conds postings failed candidates else []
               byDate = Map.fromListWith (flip (<>)) [(dueDate (eDue e), [e]) | e <- entries]
               payable = ctDirection ct == "PAYABLE"
@@ -273,7 +283,7 @@ plan until Input {..} = (concat docs, concat msgs)
       Condition
         { kContract = cId c, kType = typ, kObject = "", kPerUnit = False, kAmount = 0, kMeasurement = Nothing
         , kFrequency = freq, kDueDay = 1, kStartMonth = 1, kDueMonth = 1, kDueDate = Nothing, kInstallments = 1, kMode = InAdvance, kAccount = Just acc
-        , kPayer = Nothing, kFrom = rFrom row, kTo = rTo row
+        , kPayer = Nothing, kFrom = rFrom row, kTo = rTo row, kUnitPrice = Nothing, kDependent = Nothing, kRounding = Nothing
         }
 
     -- Kondition, die es für die Periode nicht mehr gibt.
@@ -281,7 +291,7 @@ plan until Input {..} = (concat docs, concat msgs)
       Condition
         { kContract = cId c, kType = t, kObject = o, kPerUnit = False, kAmount = 0, kMeasurement = Nothing
         , kFrequency = Monthly, kDueDay = 1, kStartMonth = 1, kDueMonth = 1, kDueDate = Nothing, kInstallments = 1, kMode = InAdvance, kAccount = Nothing, kPayer = Nothing
-        , kFrom = ps, kTo = pe
+        , kFrom = ps, kTo = pe, kUnitPrice = Nothing, kDependent = Nothing, kRounding = Nothing
         }
 
     -- Kalenderperiode eines Vermerks; bei alten Vermerken (ohne Periode) aus
@@ -305,8 +315,12 @@ plan until Input {..} = (concat docs, concat msgs)
           billedFrom = maybe from id (cBillingStart c)
           to = min (kTo k) (cTo c)
           valueAt d = measurementAt (kObject k) (maybe "" id (kMeasurement k)) d
+          dec = decimalsOf c
+          -- je Einheit: Einzelpreis (genau) × Bemessung nach der Rundungsregel
           amountAt d
-            | kPerUnit k = maybe 0 (\v -> roundScientific (fromInteger (kAmount k) * v)) (valueAt d)
+            | kPerUnit k = case kUnitPrice k >>= parseDecimal of
+                Just p -> maybe 0 (\v -> roundMinor (roundingOf c k Nothing) dec (p * toRational v)) (valueAt d)
+                Nothing -> maybe 0 (\v -> roundScientific (fromInteger (kAmount k) * v)) (valueAt d)
             | otherwise = kAmount k
           ds = filter ((>= billedFrom) . dueDate) $ case kFrequency k of
             Once -> dueOnce (kInstallments k) (kDueDate k) amountAt from to horizon
@@ -319,6 +333,79 @@ plan until Input {..} = (concat docs, concat msgs)
                 <> " für " <> kObject k <> " am " <> formatDay d
             )
         [] -> Right [Entry k x (rentObject c k (dueFrom x)) acc Original Nothing | x <- ds]
+
+    decimalsOf c = Map.findWithDefault 2 (cCurrency c) inDecimals
+
+    -- Rundungsregel: Kondition, (Art der nachgelagerten Kondition,) Konditionsart,
+    -- Buchungskreis, Standardregel, kaufmännisch.
+    roundingOf c k depRule =
+      let pick code = Map.lookup code inRoundings >>= \r -> if rActive r then Just r else Nothing
+          typeRule = Map.lookup (kType k) inConditionTypes >>= ktRounding
+          chain = [x | Just x <- [kRounding k, depRule, typeRule, inCompanyRounding]]
+          defaults' = [r | r <- sortOn rCode (Map.elems inRoundings), rDefault r, rActive r]
+       in case [r | Just r <- map pick chain] <> defaults' of
+            r : _ -> r
+            [] -> builtinRounding (decimalsOf c)
+
+    -- Nachgelagerte Konditionen eines Vertrags der Reihe nach (Reihenfolge, Schlüssel der
+    -- Art). Basis: Fälligkeiten der anderen Konditionen im Zeitraum der nachgelagerten,
+    -- je Fälligkeit (Datum, Zeitraum) und Steuerkennzeichen. Zuschlag: auf die Summe,
+    -- kommt als Fälligkeit dazu (und ist Basis späterer Arten, außer Steuer auf
+    -- Steuer); Anteil: je Basisfälligkeit gerundet und dort abgezogen.
+    -- Liefert die Basisfälligkeiten (Anteile abgezogen), die neuen und die Fehler.
+    dependents c dconds base =
+      let defs =
+            sortOn
+              (\(_, d') -> (dSort d', dCode d'))
+              [(k, d') | k <- dconds, Just code <- [kDependent k], Just d' <- [Map.lookup code inDependentTypes]]
+          missing = [(k, "Kondition " <> kType k <> ": nachgelagerte Konditionsart " <> code <> " fehlt") | k <- dconds, Just code <- [kDependent k], Map.notMember code inDependentTypes]
+          taxOfType t = Map.lookup t inConditionTypes >>= ktTaxCode
+          -- Pool: (Index der Basisfälligkeit, Fälligkeit, Steuerkennzeichen, Ergebnis einer Steuer)
+          pool0 = [(Just i, e, taxOfType (kType (eCondition e)), False) | (i, e) <- zip [0 :: Int ..] base]
+          dec = decimalsOf c
+          dueKey x = (dueDate x, dueFrom x, dueTo x, duePeriodFrom x, duePeriodTo x)
+          step (pool, outs, shares, errs) (k, d') =
+            let isTaxD = dMethod d' == "TAX"
+                rule = roundingOf c k (dRounding d')
+                inBase (_, e, _, isTax) =
+                  let t = kType (eCondition e)
+                      f = dueFrom (eDue e)
+                   in kFrom k <= f && f <= kTo k
+                        && (if null (dBase d') then not isTax else t `elem` dBase d' && not (isTax && isTaxD))
+                group (_, e, tax, _) = (dueKey (eDue e), if isTaxD then maybe tax Just (dTaxCode d') else tax)
+                matched = [p | p@(_, _, _, _) <- pool, inBase p, not isTaxD || isJust (snd (group p))]
+                groups = Map.toList (Map.fromListWith (flip (<>)) [(group p, [p]) | p <- matched])
+                rateOf tax
+                  | isTaxD = case tax >>= (`Map.lookup` inTaxCodes) of
+                      Just tc -> Right (tcRate tc, tcAccount tc)
+                      Nothing -> Left ("Kondition " <> kType k <> ": Steuerkennzeichen " <> maybe "?" id tax <> " fehlt (Hauptbuch)")
+                  | otherwise = maybe (Left ("Kondition " <> kType k <> ": Prozentsatz der Art " <> dCode d' <> " fehlt")) (\p -> Right (p, Nothing)) (dPercent d')
+                major x = fromInteger x / fromInteger (10 ^ dec) :: Rational
+                one ((_, tax), ps@((_, e0, _, _) : _)) = do
+                  (rate, taxAcc) <- rateOf tax
+                  acc <- maybe (Left ("Kondition " <> kType k <> ": Sachkonto fehlt (nachgelagerte Art " <> dCode d' <> ")")) Right
+                           (maybe (maybe taxAcc Just (dAccount d')) Just (kAccount k))
+                  let f = rate / 100
+                      perEntry = [(i, roundMinor rule dec (major (dueAmount (eDue e)) * f)) | (i, e, _, _) <- ps]
+                      amount
+                        | dEffect d' == "SHARE" = sum (map snd perEntry)
+                        | otherwise = roundMinor rule dec (major (sum [dueAmount (eDue e) | (_, e, _, _) <- ps]) * f)
+                      due = (eDue e0) {dueAmount = amount}
+                      entry = Entry k {kAccount = Just acc} due (rentObject c k (dueFrom due)) acc Original Nothing
+                      sh = if dEffect d' == "SHARE" then [(i', s) | (Just i', s) <- perEntry] else []
+                  pure (entry, tax, sh)
+                one (_, []) = Left "leer"
+                computed = map one groups
+                errs' = [(k, e) | Left e <- computed]
+                made = [x | Right x@(e, _, _) <- computed, dueAmount (eDue e) /= 0]
+                pool' = pool <> [(Nothing, e, tax, isTaxD) | dEffect d' /= "SHARE", (e, tax, _) <- made]
+             in if null errs'
+                  then (pool', outs <> [e | (e, _, _) <- made], shares <> concat [s | (_, _, s) <- made], errs)
+                  else (pool, outs, shares, errs <> take 1 errs')
+          (_, outs, shareList, errs) = foldl' step (pool0, [], [], []) defs
+          shareOf = Map.fromListWith (+) shareList
+          base' = [e {eDue = (eDue e) {dueAmount = dueAmount (eDue e) - Map.findWithDefault 0 i shareOf}} | (i, e) <- zip [0 ..] base]
+       in (base', outs, missing <> errs)
 
     measurementAt obj typ d =
       listToMaybe [mValue m | m <- inMeasurements, mObject m == obj, mType m == typ, mFrom m <= d, d <= mTo m]

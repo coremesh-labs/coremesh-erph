@@ -15,6 +15,7 @@ import Billing.Depreciation
 import Billing.Loan
 import Billing.OpCost
 import Billing.Plan
+import Billing.Pricing
 import Billing.Schedule
 import Billing.Settlement
 
@@ -122,7 +123,7 @@ planTests check = do
           ]
       contract' cid typ = Contract "1000" cid typ "ACTIVE" "P1" "EUR" "" (d 2026 1 1) openEnd Nothing
       cond cid typ acc amount =
-        Condition cid typ "" False amount Nothing Monthly 3 1 1 Nothing 1 InAdvance (Just acc) Nothing (d 2026 1 1) openEnd
+        Condition cid typ "" False amount Nothing Monthly 3 1 1 Nothing 1 InAdvance (Just acc) Nothing (d 2026 1 1) openEnd Nothing Nothing Nothing
       -- Vermerk (vorerfasst oder gebucht) einer ganzen Monatsperiode
       booked cid typ acc y m amount =
         Posted cid typ "" (d y m 1) (d y m (gregorianMonthLength y m)) (Just (d y m 1)) (d y m 3) amount Original acc (Just "WG001")
@@ -160,6 +161,7 @@ planTests check = do
           , inPosted = [booked "MV-1" "KM" "6000" 2026 1 80000]
           , inCorrectionDate = d 2026 2 20
           , inBackdateFrom = Nothing
+          , inConditionTypes = Map.empty, inDependentTypes = Map.empty, inTaxCodes = Map.empty, inRoundings = Map.empty, inCompanyRounding = Nothing, inDecimals = Map.empty
           }
       (docs, msgs) = plan (d 2026 2 28) input
       docOf cid date = [x | x <- docs, cId (dContract x) == cid, dDate x == date]
@@ -193,6 +195,37 @@ planTests check = do
       check "Kreditor: Lieferant und Objekt erlaubt, Vertrag ausgeblendet" [("supplier_id", "P1")] (sortFields (dLines x !! 1))
       check "Belegart der Vertragsart" "KR" (dDocumentType x)
     other -> check "ein Versicherungsbeleg im Januar" 1 (length other)
+  -- Nachgelagert (seit 0.13.0): Materialanteil 10 % als Anteil der Kaltmiete (eigenes Konto),
+  -- Umsatzsteuer 19 % als Zuschlag auf alles außer Steuer; je Einheit mit genauem Einzelpreis
+  let kfm = Rounding "KFM" "HALF_UP" (1 / 100) True True
+      depIn =
+        input
+          { inContracts = [contract' "MV-1" "MV"]
+          , inConditions =
+              [ cond "MV-1" "KM" "6000" 80005
+              , (cond "MV-1" "MAT" "6000" 0) {kDependent = Just "MAT", kAccount = Just "7300"}
+              , (cond "MV-1" "UST" "6000" 0) {kDependent = Just "UST", kAccount = Nothing}
+              ]
+          , inPosted = []
+          , inConditionTypes = Map.fromList [("KM", CondType "KM" (Just "U19") Nothing)]
+          , inDependentTypes =
+              Map.fromList
+                [ ("MAT", Dependent "MAT" "Material" "PERCENT" Nothing (Just 10) "SHARE" ["KM"] Nothing Nothing 10)
+                , ("UST", Dependent "UST" "USt" "TAX" Nothing Nothing "SURCHARGE" [] Nothing Nothing 90)
+                ]
+          , inTaxCodes = Map.fromList [("U19", TaxCode "U19" 19 (Just "7300"))]
+          , inRoundings = Map.fromList [("KFM", kfm)]
+          , inDecimals = Map.fromList [("EUR", 2)]
+          }
+      (depDocs, depMsgs) = plan (d 2026 1 31) depIn
+  check "nachgelagert: keine Meldung" [] depMsgs
+  check "nachgelagert: KM ohne Anteil, Anteil, Steuer auf 800,05"
+    [("KM", 72004), ("MAT", 8001), ("UST", 15201)]
+    (sort [(kType (eCondition e), dueAmount (eDue e)) | x <- depDocs, e <- dEntries x])
+  check "Rundung: Bank 2,345 → 2,34, kaufmännisch 2,35, Rappen 2,37 → 2,35"
+    [234, 235, 235]
+    [roundMinor (Rounding "" "HALF_EVEN" (1 / 100) False True) 2 2.345, roundMinor kfm 2 2.345, roundMinor (Rounding "" "HALF_UP" (5 / 100) False True) 2 2.37]
+  check "Dezimaltext" [Just 1250.5, Just 19, Nothing] [parseDecimal "1.250,5", parseDecimal "19", parseDecimal "1/2"]
   -- Überschneidende Zeitscheiben derselben Kondition: Meldung, kein Beleg
   let twice = input {inConditions = [cond "MV-1" "KM" "6000" 80000, (cond "MV-1" "KM" "6000" 85000) {kFrom = d 2026 2 1}], inPosted = mempty}
       (docs2, msgs2) = plan (d 2026 2 28) twice
@@ -357,7 +390,7 @@ loanTests check = do
           , inContracts = [bank], inConditions = [], inObjects = [], inMeasurements = [], inAccounts = Map.empty, inFieldStatus = Map.empty
           , inLoans = [terms], inLoanPayments = [], inDepreciations = []
           , inPartnerAccounts = Map.fromList [(("BANK", "CREDITOR"), PartnerAccount "BANK" "CREDITOR" (Just "1600") False)]
-          , inPosted = [], inCorrectionDate = d 2026 3 10, inBackdateFrom = Nothing
+          , inPosted = [], inCorrectionDate = d 2026 3 10, inBackdateFrom = Nothing, inConditionTypes = Map.empty, inDependentTypes = Map.empty, inTaxCodes = Map.empty, inRoundings = Map.empty, inCompanyRounding = Nothing, inDecimals = Map.empty
           }
       (docs, msgs) = plan (d 2026 2 28) input
   check "Darlehen: keine Meldungen" [] msgs
@@ -395,7 +428,7 @@ depreciationTests check = do
           { inTypes = Map.fromList [("KV", ContractType "KV" "PAYABLE" "CREDITOR" Nothing Nothing False)]
           , inContracts = [kv], inConditions = [], inObjects = [ContractObject "KV-1" "Building" "HAUS1" True (d 2025 7 15) openEnd]
           , inMeasurements = [], inAccounts = Map.empty, inFieldStatus = Map.empty, inLoans = [], inLoanPayments = []
-          , inDepreciations = [terms], inPartnerAccounts = Map.empty, inPosted = [], inCorrectionDate = d 2026 12 31, inBackdateFrom = Nothing
+          , inDepreciations = [terms], inPartnerAccounts = Map.empty, inPosted = [], inCorrectionDate = d 2026 12 31, inBackdateFrom = Nothing, inConditionTypes = Map.empty, inDependentTypes = Map.empty, inTaxCodes = Map.empty, inRoundings = Map.empty, inCompanyRounding = Nothing, inDecimals = Map.empty
           }
       (docs, msgs) = plan (d 2026 12 31) input
   check "Abschreibung: keine Meldungen" [] msgs

@@ -142,6 +142,9 @@ data Condition = Condition
   , kPayer :: Maybe Text
   , kFrom :: Day
   , kTo :: Day
+  , kUnitPrice :: Maybe Text -- ^ seit 0.13.0: Einzelpreis (Dezimaltext; je Einheit genauer als amount)
+  , kDependent :: Maybe Text -- ^ seit 0.13.0: nachgelagerte Konditionsart (Berechnung DEPENDENT)
+  , kRounding :: Maybe Text -- ^ seit 0.13.0: Rundungsregel der Kondition
   }
   deriving stock (Show)
 
@@ -291,6 +294,9 @@ condition r = do
       , kPayer = textMaybe "payer_id" r
       , kFrom = from
       , kTo = until' "valid_to" r
+      , kUnitPrice = textMaybe "unit_price" r
+      , kDependent = if text "calc_method" r == "DEPENDENT" then textMaybe "dependent_type" r else Nothing
+      , kRounding = textMaybe "rounding_rule" r
       }
 
 contractObject :: Record -> Maybe ContractObject

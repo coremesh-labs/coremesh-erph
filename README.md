@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL | 0.12.1 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL; Einzelpreis je Einheit, nachgelagerte Konditionen (Steuer, Prozent; Zuschlag oder Anteil), Rundungsregeln | 0.13.0 |
 | `profit-loss` | `ProfitLoss` | GuV-Rechnung je Buchungskreis, Mietobjekt und Zeitraum aus den Einzelposten des Hauptbuchs – Bildschirm und CSV, nichts wird gespeichert | 0.1.0 |
 
 ## Bauen, testen, starten
@@ -100,7 +100,8 @@ vor jedem Lauf die offenen Vorerfassungen ab (Events gehen höchstens einmal zu)
 
 - Beim ersten Gebrauch je Mandant und Buchungskreis liest das Plugin per Datenstrom:
   Vertragsarten, Verträge, Konditionen, Vertragsobjekte, Bemessungen, Sachkonten im
-  Buchungskreis, Feldstatus. Geladen wird als **Systemanfrage** (`ingress: true`), unabhängig
+  Buchungskreis, Feldstatus; seit 0.13.0 Konditionsarten, nachgelagerte Konditionsarten,
+  Steuerkennzeichen und Rundungsregeln. Geladen wird als **Systemanfrage** (`ingress: true`), unabhängig
   vom buchenden Benutzer.
 - **Events** (`SystemEvent.Register` auf diese Objects, Callback `ContractBillingCache.onEvent`)
   machen den betroffenen Ausschnitt ungültig; er wird beim nächsten Gebrauch neu geladen.
@@ -139,7 +140,10 @@ Lauf. So lässt sich z. B. ein ganzes Jahr nachträglich durchbuchen (Simulation
 | vorschüssig | fällig am Fälligkeitstag im ersten Monat der Periode, nicht vor Beginn des abgedeckten Teils |
 | nachschüssig | fällig am Fälligkeitstag im Monat nach dem Ende der Periode |
 | Fälligkeitstag | z. B. der 15., wenn der Mieter zur Monatsmitte zahlt; über dem Monatsende: letzter Tag des Monats |
-| je Einheit | Preis × Bemessung des Objekts am Beginn des abgedeckten Teils (realestate `Measurement`) |
+| je Einheit | Einzelpreis × Bemessung des Objekts am Beginn des abgedeckten Teils (realestate `Measurement`); seit 0.13.0 mit dem genauen Einzelpreis (`unit_price`, z. B. 4 Stellen) nach der Rundungsregel |
+| Menge × Einzelpreis | Gesamtpreis je Periode rechnet das Vertragsmodul beim Speichern (`amount`) |
+| nachgelagert | seit 0.13.0: aus den Fälligkeiten der anderen Konditionen im Zeitraum der nachgelagerten, je Fälligkeit und Steuerkennzeichen (Konditionsart der Basis bzw. fest an der Art). Steuer: Satz aus `TaxCode`, Konto = Kondition, Art bzw. Steuerkonto; Prozent: Satz der Art. **Zuschlag** auf die Summe als eigene Fälligkeit (Basis späterer Arten, keine Steuer auf Steuer); **Anteil** je Basisfälligkeit gerundet und dort abgezogen (eigenes Konto, Summe gleich) |
+| Rundung | Regel der Kondition, der nachgelagerten Art, der Konditionsart, des Buchungskreises (`LedgerCompanyConfig.rounding_rule`), Standardregel, sonst kaufmännisch auf den Cent |
 | Zeitraum | Kondition ∩ Vertragslaufzeit; Verträge im Status aktiv oder gekündigt |
 | Überschneidung | Zeitscheiben einer Kondition überschneiden sich: Meldung, der Vertrag wird nicht gebucht |
 

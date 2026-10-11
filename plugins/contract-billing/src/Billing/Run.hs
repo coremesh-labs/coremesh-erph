@@ -32,7 +32,7 @@ import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.List (nub)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Map.Strict qualified as Map
 import Data.Ratio (denominator, numerator)
 import Data.Set qualified as Set
@@ -47,6 +47,7 @@ import Billing.Data
 import Billing.Depreciation
 import Billing.Loan
 import Billing.Plan
+import Billing.Pricing
 import Billing.Schedule (Due (..), roundDiv)
 import Billing.Settlement
 import CoreMesh.Plugin
@@ -117,6 +118,14 @@ runBilling cache call RunRequest {..} = do
   -- Steuerung des Buchungskreises im Hauptbuch: „rückwirkend buchen ab“
   ledgerCfg <- readAllOrEmpty sys "LedgerCompanyConfig" [("company_code_id", String rrCompany)]
   let backdateFrom = listToMaybe ledgerCfg >>= day "backdate_from"
+      companyRounding = listToMaybe ledgerCfg >>= textMaybe "rounding_rule"
+  -- Positionen (seit 0.13.0): Konditionsarten, nachgelagerte Arten, Steuerkennzeichen, Rundungsregeln
+  condTypes <- map condType <$> get ConditionTypes
+  depTypes <- map dependentType <$> get DependentTypes
+  let needTaxes = any (isJust . kDependent) conditions
+  taxes <- if needTaxes then concatMap (maybe [] pure . taxCode) <$> get TaxCodes else pure []
+  roundings <- concatMap (maybe [] pure . rounding) <$> get RoundingRules
+  decimals <- mapM (\cur -> (cur,) <$> currencyDecimals call cur) (nub (map cCurrency contracts))
   let input =
         Input
           { inTypes = Map.fromList [(ctCode t, t) | t <- types]
@@ -133,6 +142,12 @@ runBilling cache call RunRequest {..} = do
           , inPosted = postings
           , inCorrectionDate = min today rrTo
           , inBackdateFrom = backdateFrom
+          , inConditionTypes = Map.fromList [(ktCode t, t) | t <- condTypes]
+          , inDependentTypes = Map.fromList [(dCode t, t) | t <- depTypes]
+          , inTaxCodes = Map.fromList [(tcCode t, t) | t <- taxes]
+          , inRoundings = Map.fromList [(rCode r, r) | r <- roundings]
+          , inCompanyRounding = companyRounding
+          , inDecimals = Map.fromList decimals
           }
       (docs, planMsgs) = plan rrTo input
       msgs0 = badConditions <> badLoans <> badDeps <> planMsgs
