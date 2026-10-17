@@ -14,7 +14,7 @@ plugins:
   # über die Vorerfassung des Hauptbuchs (ledger). Läufe, Sollstellungen und
   # Oberfläche hält das Vertragsmodul.
   contract-billing:
-    version: 0.14.0
+    version: 0.15.0
     # Systemanfragen für die Kopie der Stammdaten (unabhängig vom buchenden Benutzer).
     ingress: true
     settings:

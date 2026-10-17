@@ -60,8 +60,8 @@ import Billing.Loan
 import Billing.Pricing
 import Billing.Schedule
 
--- | Abgleich: Vertrag, Konditionsart, Objekt, Beginn der Kalenderperiode.
-type Group = (Text, Text, Text, Day)
+-- | Abgleich: Vertrag, Konditionsart, Objekt, Position, Beginn der Kalenderperiode.
+type Group = (Text, Text, Text, Integer, Day)
 
 data Input = Input
   { inTypes :: Map Text ContractType
@@ -117,11 +117,11 @@ data Doc = Doc
   deriving stock (Show)
 
 -- | Schlüssel einer Fälligkeit (Überschneidung von Zeitscheiben).
-entryKey :: Entry -> (Text, Text, Text, Day)
-entryKey e = (kContract (eCondition e), kType (eCondition e), kObject (eCondition e), dueFrom (eDue e))
+entryKey :: Entry -> (Text, Text, Text, Integer, Day)
+entryKey e = (kContract (eCondition e), kType (eCondition e), kObject (eCondition e), kPos (eCondition e), dueFrom (eDue e))
 
 groupOf :: Entry -> Group
-groupOf e = (kContract (eCondition e), kType (eCondition e), kObject (eCondition e), duePeriodFrom (eDue e))
+groupOf e = (kContract (eCondition e), kType (eCondition e), kObject (eCondition e), kPos (eCondition e), duePeriodFrom (eDue e))
 
 docCorrections :: Doc -> Int
 docCorrections d = length [() | e <- dEntries d, eKind e == Correction]
@@ -169,10 +169,10 @@ plan until Input {..} = (concat docs, concat msgs)
               (baseEntries, dependentEs, depErrors) = dependents c [k | k <- conds, isJust (kDependent k)] (concat [es | (_, Right es) <- results])
               own = baseEntries <> loanEntries c horizon <> depEntries c horizon
               candidates = own <> dependentEs
-              failed = Set.fromList ([(kType k, kObject k) | (k, Left _) <- results] <> [(kType k, kObject k) | (k, _) <- depErrors])
+              failed = Set.fromList ([(kType k, kObject k, kPos k) | (k, Left _) <- results] <> [(kType k, kObject k, kPos k) | (k, _) <- depErrors])
               -- Gleiche Fälligkeit zweimal = Zeitscheiben einer Kondition überschneiden sich (Datenfehler).
               clashes = Map.keys (Map.filter (> (1 :: Int)) (Map.fromListWith (+) [(entryKey e, 1) | e <- own]))
-              overlap = [(cId c, "Kondition " <> t <> ": Zeitscheiben überschneiden sich (" <> formatDay from <> ") – Vertrag nicht gebucht") | (_, t, _, from) <- clashes]
+              overlap = [(cId c, "Kondition " <> t <> ": Zeitscheiben überschneiden sich (" <> formatDay from <> ") – Vertrag nicht gebucht") | (_, t, _, _, from) <- clashes]
               errors = [(cId c, e) | (_, Left e) <- results] <> [(cId c, e) | (_, e) <- depErrors] <> overlap
               entries = if null clashes then reconcile c conds postings failed candidates else []
               byDate = Map.fromListWith (flip (<>)) [(dueDate (eDue e), [e]) | e <- entries]
@@ -202,8 +202,8 @@ plan until Input {..} = (concat docs, concat msgs)
             ]
           corrections =
             [ correction c g es (filter ((== g) . postedGroup conds) postings) diff
-            | (g@(_, t, o, _), done) <- Map.toList postedSum
-            , (t, o) `Set.notMember` failed
+            | (g@(_, t, o, n, _), done) <- Map.toList postedSum
+            , (t, o, n) `Set.notMember` failed
             , let es = Map.findWithDefault [] g computed
                   diff = sum (map (dueAmount . eDue) es) - done
             , diff /= 0
@@ -219,14 +219,14 @@ plan until Input {..} = (concat docs, concat msgs)
     -- Nachberechnung einer Periode: Differenz zum Vermerkten, zum Tag des Laufs.
     -- Konto und Mietobjekt wie gerechnet, sonst wie zuletzt vermerkt (Kondition
     -- entfallen, Vertrag rückwirkend beendet).
-    correction c (_, t, o, ps) es ps' diff =
+    correction c (_, t, o, n, ps) es ps' diff =
       let lastPosted = listToMaybe (reverse (sortOn pDue ps'))
           pe = case es of
             e : _ -> duePeriodTo (eDue e)
             [] -> maybe ps pTo lastPosted
           k = case es of
             e : _ -> eCondition e
-            [] -> orphan c t o ps pe
+            [] -> orphan c t o n ps pe
        in Entry
             { eCondition = k
             , eDue = Due ps pe ps pe (correctionDay (maybe ps (dueDate . eDue) (listToMaybe es))) diff
@@ -281,15 +281,15 @@ plan until Input {..} = (concat docs, concat msgs)
 
     loanCondition c typ acc freq row =
       Condition
-        { kContract = cId c, kType = typ, kObject = "", kPerUnit = False, kAmount = 0, kMeasurement = Nothing
+        { kContract = cId c, kType = typ, kObject = "", kPos = 1, kPerUnit = False, kAmount = 0, kMeasurement = Nothing
         , kFrequency = freq, kDueDay = 1, kStartMonth = 1, kDueMonth = 1, kDueDate = Nothing, kInstallments = 1, kMode = InAdvance, kAccount = Just acc
         , kPayer = Nothing, kFrom = rFrom row, kTo = rTo row, kUnitPrice = Nothing, kDependent = Nothing, kRounding = Nothing
         }
 
     -- Kondition, die es für die Periode nicht mehr gibt.
-    orphan c t o ps pe =
+    orphan c t o n ps pe =
       Condition
-        { kContract = cId c, kType = t, kObject = o, kPerUnit = False, kAmount = 0, kMeasurement = Nothing
+        { kContract = cId c, kType = t, kObject = o, kPos = n, kPerUnit = False, kAmount = 0, kMeasurement = Nothing
         , kFrequency = Monthly, kDueDay = 1, kStartMonth = 1, kDueMonth = 1, kDueDate = Nothing, kInstallments = 1, kMode = InAdvance, kAccount = Nothing, kPayer = Nothing
         , kFrom = ps, kTo = pe, kUnitPrice = Nothing, kDependent = Nothing, kRounding = Nothing
         }
@@ -300,10 +300,10 @@ plan until Input {..} = (concat docs, concat msgs)
       let start = case pPeriod p of
             Just d -> d
             Nothing ->
-              case [k | k <- conds, kType k == pType p, kObject k == pObject p, kFrom k <= pFrom p, pFrom p <= kTo k] of
+              case [k | k <- conds, kType k == pType p, kObject k == pObject p, kPos k == pPos p, kFrom k <= pFrom p, pFrom p <= kTo k] of
                 k : _ -> fst (periodFrom (kStartMonth k) (kFrequency k) (pFrom p))
                 [] -> pFrom p
-       in (pContract p, pType p, pObject p, start)
+       in (pContract p, pType p, pObject p, pPos p, start)
 
     entriesFor c k horizon = do
       acc <- maybe (Left ("Kondition " <> kType k <> ": Sachkonto fehlt (Kontenfindung)")) Right (kAccount k)

@@ -298,6 +298,7 @@ entryJson e =
         [ "contract_id" .= kContract k
         , "condition_type" .= kType k
         , "object_id" .= kObject k
+        , "position" .= kPos k
         , "kind" .= (if eKind e == Correction then "CORRECTION" else "ORIGINAL" :: Text)
         , "billing_period" .= iso8601Show (duePeriodFrom d)
         , "period_from" .= iso8601Show (dueFrom d)

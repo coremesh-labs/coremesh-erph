@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL; Einzelpreis je Einheit, nachgelagerte Konditionen (Steuer, Prozent; Zuschlag oder Anteil), Rundungsregeln, Tilgungsplan bis Stichtag | 0.13.1 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL; Einzelpreis je Einheit, nachgelagerte Konditionen (Steuer, Prozent; Zuschlag oder Anteil), Rundungsregeln, Tilgungsplan bis Stichtag, Positionen (derselbe Gegenstand mehrfach) | 0.15.0 |
 | `profit-loss` | `ProfitLoss` | GuV-Rechnung je Buchungskreis, Mietobjekt und Zeitraum aus den Einzelposten des Hauptbuchs – Bildschirm und CSV, nichts wird gespeichert | 0.1.0 |
 
 ## Bauen, testen, starten

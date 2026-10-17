@@ -128,6 +128,7 @@ data Condition = Condition
   { kContract :: Text
   , kType :: Text
   , kObject :: Text -- ^ leer = ganzer Vertrag
+  , kPos :: Integer -- ^ seit 0.15.0: Position (derselbe Gegenstand mehrfach je Objekt; 1 = erste)
   , kPerUnit :: Bool
   , kAmount :: Integer -- ^ kleinste Währungseinheit (je Einheit bei kPerUnit)
   , kMeasurement :: Maybe Text
@@ -196,6 +197,7 @@ data Posted = Posted
   { pContract :: Text
   , pType :: Text
   , pObject :: Text
+  , pPos :: Integer -- ^ Position der Kondition (Vermerke vor 0.15.0: 1)
   , pFrom :: Day -- ^ abgedeckt von (Nachberechnung: Beginn der Periode)
   , pTo :: Day
   , pPeriod :: Maybe Day -- ^ Beginn der Kalenderperiode; leer bei Vermerken vor 0.4.0
@@ -218,6 +220,7 @@ posted r = do
       { pContract = text "contract_id" r
       , pType = text "condition_type" r
       , pObject = text "object_id" r
+      , pPos = maybe 1 id (int "position" r)
       , pFrom = from
       , pTo = to
       , pPeriod = day "billing_period" r
@@ -280,6 +283,7 @@ condition r = do
       { kContract = text "contract_id" r
       , kType = text "condition_type" r
       , kObject = text "object_id" r
+      , kPos = maybe 1 id (int "position" r)
       , kPerUnit = text "calc_method" r == "PER_UNIT"
       , kAmount = amount
       , kMeasurement = textMaybe "measurement_type" r

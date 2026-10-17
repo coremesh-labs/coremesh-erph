@@ -123,10 +123,10 @@ planTests check = do
           ]
       contract' cid typ = Contract "1000" cid typ "ACTIVE" "P1" "EUR" "" (d 2026 1 1) openEnd Nothing
       cond cid typ acc amount =
-        Condition cid typ "" False amount Nothing Monthly 3 1 1 Nothing 1 InAdvance (Just acc) Nothing (d 2026 1 1) openEnd Nothing Nothing Nothing
+        Condition cid typ "" 1 False amount Nothing Monthly 3 1 1 Nothing 1 InAdvance (Just acc) Nothing (d 2026 1 1) openEnd Nothing Nothing Nothing
       -- Vermerk (vorerfasst oder gebucht) einer ganzen Monatsperiode
       booked cid typ acc y m amount =
-        Posted cid typ "" (d y m 1) (d y m (gregorianMonthLength y m)) (Just (d y m 1)) (d y m 3) amount Original acc (Just "WG001")
+        Posted cid typ "" 1 (d y m 1) (d y m (gregorianMonthLength y m)) (Just (d y m 1)) (d y m 3) amount Original acc (Just "WG001")
       -- Feldstatus wie die Vorschläge des Ledgers (nicht genannt = ausgeblendet)
       status =
         Map.fromList
@@ -231,6 +231,11 @@ planTests check = do
       (docs2, msgs2) = plan (d 2026 2 28) twice
   check "Überschneidung: kein Beleg für den Vertrag" 0 (length [x | x <- docs2, cId (dContract x) == "MV-1"])
   check "Überschneidung: Meldung" [("MV-1", "Kondition KM: Zeitscheiben überschneiden sich (01.02.2026) – Vertrag nicht gebucht")] [m | m@("MV-1", _) <- msgs2]
+  -- Derselbe Gegenstand zweimal (Position 2): keine Überschneidung, beide gebucht
+  let pos2 = input {inConditions = [cond "MV-1" "KM" "6000" 80000, (cond "MV-1" "KM" "6000" 5000) {kPos = 2}], inPosted = mempty}
+      (docs3, msgs3) = plan (d 2026 1 31) pos2
+  check "Position 2: keine Meldung" [] [m | m@("MV-1", _) <- msgs3]
+  check "Position 2: beide Beträge" [5000, 80000] (sort [dueAmount (eDue e) | x <- docs3, cId (dContract x) == "MV-1", e <- dEntries x])
 
   -- Abweichender Zahler: sein Abstimmkonto; ohne Konto oder gesperrt: Vertrag nicht gebucht
   let payerInput pay = input {inContracts = take 1 (inContracts input), inConditions = [(cond "MV-1" "KM" "6000" 80000) {kPayer = Just pay}], inPosted = []}
