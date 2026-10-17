@@ -61,7 +61,14 @@ source = \case
 
 -- | Objects, deren Events den Cache betreffen (für SystemEvent.Register).
 watched :: [Text]
-watched = [o | s <- [minBound .. maxBound], let (o, _, _) = source s]
+watched = [o | s <- [minBound .. maxBound], let (o, _, _) = source s] <> ["ContractConditionKind"]
+
+-- | Objects, deren Datensätze ein Event außerdem ändert: Die Kondition trägt
+-- is_template aus dem Abrechnungsweg der Vertragsart und der Konditionsart (seit 0.14.0).
+affected :: Text -> [Text]
+affected o
+  | o `elem` ["ContractType", "ContractConditionKind"] = [o, "ContractCondition"]
+  | otherwise = [o]
 
 data Entry = Entry
   { enRecords :: [Record]
@@ -111,7 +118,7 @@ invalidate :: Cache -> Text -> Text -> Text -> IO ()
 invalidate c tenant obj cc =
   atomically . modifyTVar' (cEntries c) . Map.filterWithKey $ \(t, k, s) _ ->
     let (o, _, _) = source s
-     in not (t == tenant && o == obj && (cc == "" || k == cc || k == "*"))
+     in not (t == tenant && o `elem` affected obj && (cc == "" || k == cc || k == "*"))
 
 clearTenant :: Cache -> Text -> IO ()
 clearTenant c tenant = atomically . modifyTVar' (cEntries c) $ Map.filterWithKey (\(t, _, _) _ -> t /= tenant)
