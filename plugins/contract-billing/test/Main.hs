@@ -603,6 +603,10 @@ opCostTests check = do
   check "WEG: MV1 60/400" [15000] [trCosts t | t <- orTenants weg, trContract t == "MV1"]
   check "WEG: übrige Eigentümer 300/400" 75000 (orForeignTotal weg)
   check "WEG: Summe" [Ok] [chLevel c | c <- orChecks weg, chName c == "Summe"]
+  -- 333,33 nach 117/1000: Mieter 38,99 (38,99961 abgerundet, Rest unter 1 Cent), übrige Eigentümer 294,34 mit dem Rest
+  let weg3 = computeOpCost wegIn {opSources = [Source "LEDGER" "6300" "JE:1" 33333 ToPool "" "" 10 Nothing], opMeasurements = [Measurement "W1" "WFL" 117 (d 2020 1 1) openEnd], opObjects = ["W1"], opTotals = [Measurement "B1" "WFL" 1000 (d 2020 1 1) openEnd]}
+  check "WEG: Bruchteile der übrigen Eigentümer nicht beim Mieter" ([3899], 29434) ([trCosts t | t <- orTenants weg3, trContract t == "MV1"], orForeignTotal weg3)
+  check "WEG: Summe mit Rest" [Ok] [chLevel c | c <- orChecks weg3, chName c == "Summe"]
   let noTotal = computeOpCost wegIn {opTotals = []}
   check "WEG: ohne Gebäudebemessung Hinweis" [Deviation] [chLevel c | c <- orChecks noTotal, chName c == "Regel 50"]
 

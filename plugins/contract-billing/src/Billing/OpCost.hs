@@ -330,7 +330,8 @@ computeOpCost inp@OpInput {..} =
     cents a = balance a final `div` scale
     sourcesCents = negate (sum [b | (Q _ _, b) <- Map.toList (stBal final)]) `div` scale
     ownerCents = sum [b `div` scale | (E _ _, b) <- Map.toList (stBal final)]
-    foreignCents = sum [b `div` scale | (F _, b) <- Map.toList (stBal final)]
+    -- übrige Eigentümer mit dem Rest unter einem Cent (ihre Bruchteile gehen nicht in die Rundung der Mieter)
+    foreignCents = (sum [b | (F _, b) <- Map.toList (stBal final)] + balance R final) `div` scale
     labels = Map.union (Map.map adName opAccounts) (Map.map (\c -> Map.findWithDefault c c opCategories) (poolLabels rules))
     tenants =
       [ TenantResult
@@ -586,7 +587,6 @@ roundToCents def step tenants st0 = (st2, rc)
       M _ _ -> True
       T {} -> True
       E _ _ -> True
-      F _ -> True
       _ -> False
     st1 = foldl' (\s (a, b) -> book (mk R a (b - (b `div` scale) * scale) "Abrunden auf Cent") s) st0 (accounts final st0)
     rc = balance R st1 `div` scale
