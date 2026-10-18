@@ -225,6 +225,19 @@ planTests check = do
   check "Rundung: Bank 2,345 → 2,34, kaufmännisch 2,35, Rappen 2,37 → 2,35"
     [234, 235, 235]
     [roundMinor (Rounding "" "HALF_EVEN" (1 / 100) False True) 2 2.345, roundMinor kfm 2 2.345, roundMinor (Rounding "" "HALF_UP" (5 / 100) False True) 2 2.37]
+  -- Je Einheit ohne Objekt: Bemessung des Hauptobjekts (qm-Preis × Wohnfläche)
+  let qm =
+        input
+          { inContracts = [contract' "MV-1" "MV"]
+          , inConditions = [(cond "MV-1" "KM" "6000" 447) {kPerUnit = True, kMeasurement = Just "WFL", kUnitPrice = Just "4.4678"}]
+          , inMeasurements = [Measurement "WG001" "WFL" 83.9 (d 2000 1 1) openEnd]
+          , inPosted = []
+          , inRoundings = Map.fromList [("KFM", kfm)]
+          , inDecimals = Map.fromList [("EUR", 2)]
+          }
+      (qmDocs, qmMsgs) = plan (d 2026 1 31) qm
+  check "je Einheit am Hauptobjekt: keine Meldung" [] qmMsgs
+  check "je Einheit am Hauptobjekt: 4,4678 × 83,9 = 374,85" [37485] [dueAmount (eDue e) | x <- qmDocs, e <- dEntries x]
   check "Dezimaltext" [Just 1250.5, Just 19, Nothing] [parseDecimal "1.250,5", parseDecimal "19", parseDecimal "1/2"]
   -- Überschneidende Zeitscheiben derselben Kondition: Meldung, kein Beleg
   let twice = input {inConditions = [cond "MV-1" "KM" "6000" 80000, (cond "MV-1" "KM" "6000" 85000) {kFrom = d 2026 2 1}], inPosted = mempty}
