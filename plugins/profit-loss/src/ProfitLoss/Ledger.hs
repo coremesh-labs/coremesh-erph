@@ -18,6 +18,10 @@ module ProfitLoss.Ledger
   , ContractTotal (..)
   , contractTotals
   , partnerRows
+  , PartnerRow (..)
+  , partnerBalances
+  , partnerListColumns
+  , partnerListRows
   ) where
 
 import Data.List (sortOn)
@@ -160,3 +164,59 @@ partnerRows dec from to totals sh =
     <> sheetRows dec from to sh
   where
     amount = formatAmountDe dec
+
+-- | Saldo eines Partners auf einem Abstimmkonto (Art D = Debitor, K = Kreditor).
+data PartnerRow = PartnerRow
+  { prKind :: Text
+  , prAccount :: Text
+  , prPartner :: Text
+  , prOpening :: Integer
+  , prDebit :: Integer
+  , prCredit :: Integer
+  , prClosing :: Integer
+  }
+  deriving stock (Eq, Show)
+
+-- | Je Art, Abstimmkonto und Partner: Vortrag (vor „von“), Soll und Haben im Zeitraum, Saldo.
+partnerBalances :: Day -> Day -> [(Text, Posting)] -> [PartnerRow]
+partnerBalances from to postings =
+  [ PartnerRow k a p o d c (o + d - c)
+  | ((k, a, p), (o, d, c)) <- Map.toAscList sums
+  ]
+  where
+    sums =
+      Map.fromListWith
+        add
+        [ ((k, poAccount p, poPartner p), if poDate p < from then (poAmount p, 0, 0) else if poAmount p >= 0 then (0, poAmount p, 0) else (0, 0, negate (poAmount p)))
+        | (k, p) <- postings
+        , poDate p <= to
+        ]
+    add (a, b, c) (x, y, z) = (a + x, b + y, c + z)
+
+partnerListColumns :: [Text]
+partnerListColumns = ["Konto", "Bezeichnung", "Partner", "Name", "Saldovortrag", "Soll", "Haben", "Saldo", "Stand"]
+
+-- | Zeilen je Partner, Summe je Abstimmkonto, Summe Debitoren bzw. Kreditoren und
+-- Gesamtsumme; nur offene = Partner mit Saldo ≠ 0 (Summen über die gezeigten Zeilen).
+partnerListRows :: Int -> Bool -> (Text -> Text) -> (Text -> Text) -> [PartnerRow] -> [[Text]]
+partnerListRows dec onlyOpen accountName partnerName rows =
+  concat
+    [ concat
+        [ [ [prAccount, accountName prAccount, prPartner, partnerName prPartner, amount prOpening, amount prDebit, amount prCredit, amount prClosing, balanceText prClosing]
+          | PartnerRow {..} <- rs
+          ]
+            <> [total ("Summe Konto " <> a) [a, accountName a] rs]
+        | (a, rs) <- groups prAccount ks
+        ]
+        <> [total ("Summe " <> kindName k) ["", ""] ks]
+    | (k, ks) <- groups prKind shown
+    ]
+    <> [total "Gesamtsumme" ["", ""] shown | length (groups prKind shown) > 1]
+  where
+    shown = if onlyOpen then filter ((/= 0) . prClosing) rows else rows
+    amount = formatAmountDe dec
+    kindName k = if k == "D" then "Debitoren" else if k == "K" then "Kreditoren" else k
+    groups f xs = Map.toAscList (Map.fromListWith (flip (<>)) [(f x, [x]) | x <- xs])
+    total label lead rs =
+      let o = sum (map prOpening rs); d = sum (map prDebit rs); c = sum (map prCredit rs); z = o + d - c
+       in lead <> [label <> " (" <> T.pack (show (length rs)) <> " Partner)", "", amount o, amount d, amount c, amount z, balanceText z]

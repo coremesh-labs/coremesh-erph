@@ -6,6 +6,7 @@
 -- | TrialBalance.compute | company_code, fiscal_year, period_from, period_to, building_id?, entity_id?, account_from?, account_to?, only_open? | message, table, download |
 -- | AccountSheet.compute | company_code, fiscal_year, account_number, period_from, period_to, building_id?, entity_id?, contract_id?, partner_id? | message, table, download |
 -- | *.formState | FormStateRequest | Vorbelegung (laufendes Jahr bis heute) |
+-- | PartnerBalance.compute | company_code, period_from, period_to, partner_kind? (DEBITOR, CREDITOR), partner_id?, account_number?, only_open? | message, table, download |
 -- | LedgerReport.contractAccount | company_code, contract_id, period_from?, period_to? | message, table, download, balance |
 -- | LedgerReport.partnerAccount | partner_id, company_code?, period_from?, period_to? | message, table, download, balance |
 -- | LedgerReport.accountBalance | company_code, account_number, date?, contract_id? | balance, currency, decimals, items |
@@ -50,7 +51,7 @@ import ProfitLoss.Objects
 import ProfitLoss.Report
 
 version :: Text
-version = "0.2.1"
+version = "0.3.0"
 
 profitLossPlugin :: IORef Settings -> Plugin
 profitLossPlugin ref =
@@ -60,6 +61,7 @@ profitLossPlugin ref =
         [ Capability "ProfitLoss" ["compute", "formState"] [] "GuV rechnen: Bildschirm und CSV, nichts wird gespeichert"
         , Capability "TrialBalance" ["compute", "formState"] [] "Summen- und Saldenliste: Bildschirm und CSV"
         , Capability "AccountSheet" ["compute", "formState"] [] "Kontoblatt mit laufendem Saldo: Bildschirm und CSV"
+        , Capability "PartnerBalance" ["compute", "formState"] [] "Debitoren und Kreditoren: Salden je Partner und Abstimmkonto mit Summen, Partnerkonto"
         , Capability "LedgerReport" ["contractAccount", "partnerAccount", "accountBalance"] [] "Vertrags- und Partnerkonto, Kontostand – für Vertrag und Geschäftspartner"
         ]
     , pluginDescribe = Just describe
@@ -125,7 +127,7 @@ day k r = iso8601ParseM (T.unpack (T.take 10 (text k r)))
 
 handler :: Settings -> Call -> Request -> IO Response
 handler settings call req = case (reqObject req, reqAction req) of
-  (o, "formState") | o `elem` ["ProfitLoss", "TrialBalance", "AccountSheet"] -> do
+  (o, "formState") | o `elem` ["ProfitLoss", "TrialBalance", "AccountSheet", "PartnerBalance"] -> do
     today <- utctDay <$> getCurrentTime
     let (y, _, _) = toGregorian today
         values = case KM.lookup "values" p of
@@ -133,7 +135,7 @@ handler settings call req = case (reqObject req, reqAction req) of
           _ -> mempty
         preset k v = [K.fromText k .= object ["value" .= v] | T.null (text k values)]
         -- Vorbelegung als Text (FieldState.value ist eine Zeichenkette)
-        year = if o == "ProfitLoss" then [] else preset "fiscal_year" (T.pack (show y))
+        year = if o `elem` ["ProfitLoss", "PartnerBalance"] then [] else preset "fiscal_year" (T.pack (show y))
     pure . response $
       object
         [ "fields" .= object (year <> preset "period_from" (iso8601Show (fromGregorian y 1 1)) <> preset "period_to" (iso8601Show today))
@@ -154,6 +156,10 @@ handler settings call req = case (reqObject req, reqAction req) of
     fy <- year
     (from, to) <- period
     response <$> sheet settings call cc fy acc p from to
+  ("PartnerBalance", "compute") -> do
+    cc <- required "company_code" "Buchungskreis"
+    (from, to) <- period
+    response <$> partnerList settings call cc p from to
   ("LedgerReport", "contractAccount") -> do
     cc <- required "company_code" "Buchungskreis"
     c <- required "contract_id" "Vertrag"
@@ -190,6 +196,7 @@ handler settings call req = case (reqObject req, reqAction req) of
 formMessage :: Text -> Text
 formMessage = \case
   "TrialBalance" -> "Salden aller Konten im Geschäftsjahr: Vortrag vor „von“, Soll und Haben im Zeitraum. Ausgeglichen = Saldo 0."
+  "PartnerBalance" -> "Debitoren und Kreditoren je Abstimmkonto mit Summen. Mit einem Geschäftspartner: sein Partnerkonto mit laufendem Saldo und Stand je Vertrag."
   "AccountSheet" -> "Alle Buchungen eines Kontos mit laufendem Saldo – z. B. Darlehenskonto, Kautionen, Mieter- oder Lieferantenkonto."
   _ -> "Gewinn und Verlust aus den gebuchten Einzelposten (Buchungsdatum im Zeitraum), wahlweise für ein Gebäude oder mit einer Spalte je Gebäude."
 
@@ -404,6 +411,49 @@ partnerAccount settings call cc bp mfrom to = do
   let items = dedupe [r | r <- customer <> supplier, partnerLine settings r]
   objs <- if T.null cc then pure noObjects else loadObjects call cc
   report settings call objs partners ("Partnerkonto " <> named partners bp) ([("Buchungskreis", cc) | not (T.null cc)] <> [("Partner", named partners bp)]) ("Partnerkonto_" <> safe bp) items mfrom to True
+
+-- | Debitoren und Kreditoren: ohne Partner je Abstimmkonto und Partner mit Summen,
+-- mit Partner dessen Partnerkonto im Buchungskreis.
+partnerList :: Settings -> Call -> Text -> Record -> Day -> Day -> IO Value
+partnerList settings call cc p from to
+  | not (T.null (text "partner_id" p)) = partnerAccount settings call cc (text "partner_id" p) (Just from) to
+  | otherwise = do
+      accounts <- loadAccounts call cc
+      raw <- readAll call "JournalEntryItem" ([("company_code_id", String cc)] <> [("account_number", String acc) | not (T.null acc)])
+      partners <- partnerNames call
+      let kinds = case text "partner_kind" p of
+            "DEBITOR" -> ["D"]
+            "CREDITOR" -> ["K"]
+            _ -> ["D", "K"]
+          postings =
+            [ (k, Posting (text "account_number" r) d (text "document_number" r) "" "" (partnerOf r) "" a)
+            | r <- raw
+            , partnerLine settings r
+            , let k = text "account_kind" r
+            , k `elem` kinds
+            , T.null acc || text "account_number" r == acc
+            , Just d <- [day "posting_date" r]
+            , Just a <- [int "amount_local_curr" r]
+            ]
+          currency = fromMaybe "EUR" (lookup True [(True, c) | r <- raw, let c = text "local_currency" r, not (T.null c)])
+          rows = partnerBalances from to postings
+          names = Map.fromList [(accNumber x, accName x) | x <- accounts]
+          open = length (filter ((/= 0) . prClosing) rows)
+          period = formatDay from <> "–" <> formatDay to
+          kindText = case kinds of
+            ["D"] -> "Debitoren"
+            ["K"] -> "Kreditoren"
+            _ -> "Debitoren und Kreditoren"
+          header = [(kindText, ""), ("Buchungskreis", cc)] <> [("Konto", acc) | not (T.null acc)] <> [("Zeitraum", period), ("Währung", currency)]
+          file = T.replace " " "_" kindText <> "_" <> cc <> "_" <> T.pack (iso8601Show to) <> ".csv"
+          closing k = sum [prClosing r | r <- rows, prKind r == k]
+      dec <- currencyDecimals call currency
+      let message =
+            kindText <> " " <> cc <> ", " <> period <> ": " <> T.pack (show (length rows)) <> " Partnerkonten, davon " <> T.pack (show open) <> " nicht ausgeglichen"
+              <> T.concat [", Saldo " <> n <> " " <> formatAmountDe dec (closing k) <> " " <> currency | (k, n) <- [("D", "Debitoren"), ("K", "Kreditoren")], k `elem` kinds]
+      pure (result message partnerListColumns (partnerListRows dec (flag "only_open" p) (\a -> Map.findWithDefault "" a names) (\x -> Map.findWithDefault "" x partners) rows) header file)
+  where
+    acc = text "account_number" p
 
 -- | Stand eines Sachkontos am Stichtag (alle Geschäftsjahre), wahlweise nur Posten eines Vertrags.
 accountBalance :: Settings -> Call -> Text -> Text -> Text -> Day -> IO Value

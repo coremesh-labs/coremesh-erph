@@ -4,7 +4,7 @@ plugins:
   # Kontoblatt. Liest mit den Rechten des Benutzers, speichert nichts; Ergebnis
   # auf dem Bildschirm und als CSV.
   profit-loss:
-    version: 0.2.1
+    version: 0.3.0
     settings:
       ledger: 0L                     # Ledger der Einzelposten (führendes Ledger)
       # Kontierungsspalte der Einzelposten mit dem Gebäude (wie die Objektkontierung
