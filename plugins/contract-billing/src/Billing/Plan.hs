@@ -314,7 +314,7 @@ plan until Input {..} = (concat docs, concat msgs)
       let from = max (kFrom k) (cFrom c)
           billedFrom = maybe from id (cBillingStart c)
           to = min (kTo k) (cTo c)
-          valueAt d = measurementAt (kObject k) (maybe "" id (kMeasurement k)) d
+          valueAt d = measurementAt (perUnitObject c k d) (maybe "" id (kMeasurement k)) d
           dec = decimalsOf c
           -- je Einheit: Einzelpreis (genau) × Bemessung nach der Rundungsregel
           amountAt d
@@ -330,7 +330,7 @@ plan until Input {..} = (concat docs, concat msgs)
         d : _ ->
           Left
             ( "Kondition " <> kType k <> ": keine Bemessung " <> maybe "?" id (kMeasurement k)
-                <> " für " <> kObject k <> " am " <> formatDay d
+                <> " für " <> perUnitObject c k d <> " am " <> formatDay d
             )
         [] -> Right [Entry k x (rentObject c k (dueFrom x)) acc Original Nothing | x <- ds]
 
@@ -409,6 +409,13 @@ plan until Input {..} = (concat docs, concat msgs)
 
     measurementAt obj typ d =
       listToMaybe [mValue m | m <- inMeasurements, mObject m == obj, mType m == typ, mFrom m <= d, d <= mTo m]
+
+    -- Objekt der Bemessung (je Einheit): das der Kondition, sonst (seit 0.16.0) das Hauptobjekt
+    -- des Vertrags am Stichtag.
+    perUnitObject c k d
+      | T.null (kObject k) =
+          maybe "" oId (listToMaybe (sortOn (not . oMain) [o | o <- Map.findWithDefault [] (cId c) objectsOf, oFrom o <= d, d <= oTo o]))
+      | otherwise = kObject k
 
     -- Mietobjekt der Kontierung: das Objekt der Kondition, sonst das Hauptobjekt
     -- des Vertrags am Stichtag – jeweils nur, wenn es ein Mietobjekt ist.
