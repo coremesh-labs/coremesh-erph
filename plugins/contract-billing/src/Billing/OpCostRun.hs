@@ -20,6 +20,9 @@
 --     Mieter, nur mit Wohnung auf das Objekt, sonst in den Topf.
 --
 -- LEDGER: mehrere Sachkonten mit Komma (z. B. Personal- und Materialkosten).
+-- Gesamtschlüssel (seit 0.20.0, Regel key_total = BUILDING): Bemessung der
+-- Gebäude der Einheit, z. B. MEA 1000 der WEG – der Rest geht an F: (übrige
+-- Eigentümer).
 -- ADVANCE (Vorauszahlungen einer Ebene): BOOKED = Sollstellungen der
 -- Konditionsarten (anteilig), INPUT = Eingaben am Lauf je Vertrag.
 module Billing.OpCostRun
@@ -98,10 +101,13 @@ computeOpCostRun cache call p = do
         mapMaybe person . filter ((`Set.member` tenantSet) . text "contract_id")
           <$> readAll sys "ContractPersons" (byCC <> [("includeHistory", Bool True)])
       else pure []
-  measurements <-
+  allMeasurements <-
     if any (\k -> akBasis k == "MEASUREMENT") (Map.elems keys)
-      then filter ((`Set.member` objectIds) . mObject) . concatMap (maybe [] pure . measurement) <$> get Measurements
+      then concatMap (maybe [] pure . measurement) <$> get Measurements
       else pure []
+  -- Mietobjekte; Gebäude der Einheit für den Gesamtschlüssel (z. B. MEA der WEG)
+  let measurements = filter ((`Set.member` objectIds) . mObject) allMeasurements
+      totals = filter ((`Set.member` buildings) . mObject) allMeasurements
   -- Kontierung → Ziel; Nothing = gehört nicht zu dieser Einheit
   let target mContract objType objId
         | Just c <- mContract, c `Set.member` tenantSet = Just (ToTenant c)
@@ -310,6 +316,7 @@ computeOpCostRun cache call p = do
             , opKeys = keys
             , opObjects = Set.toList objectIds
             , opMeasurements = measurements
+            , opTotals = totals
             , opOccupancy = occupancy
             , opPersons = persons
             , opSources = ledgerSources <> invoiceSources <> settlementSources <> inputSources
@@ -324,7 +331,8 @@ computeOpCostRun cache call p = do
       checkSummary = tshow (count Ok) <> " ok, " <> tshow (count Deviation) <> " Abweichungen, " <> tshow (count Failure) <> " Fehler"
       summaryText =
         "Kosten " <> formatAmount 2 (orSources res) <> " · Mieter " <> formatAmount 2 (orTenantTotal res) <> " · Eigentümer/Leerstand "
-          <> formatAmount 2 (orOwnerTotal res) <> " · Vorauszahlungen " <> formatAmount 2 (sum (map trAdvances (orTenants res)))
+          <> formatAmount 2 (orOwnerTotal res)
+          <> (if orForeignTotal res /= 0 then " · übrige Eigentümer " <> formatAmount 2 (orForeignTotal res) else "") <> " · Vorauszahlungen " <> formatAmount 2 (sum (map trAdvances (orTenants res)))
           <> " · Prüfung: " <> checkSummary
       checkLines =
         T.intercalate "\n"
@@ -424,6 +432,7 @@ rule r = do
       , ruShare = fromMaybe 0 (textMaybe "share_pct" r >>= parseRate)
       , ruKey = text "allocation_key" r
       , ruTimeSplit = not (bool "vacancy_to_tenants" r)
+      , ruKeyTotal = fromMaybe "OBJECTS" (textMaybe "key_total" r)
       , ruAssignment = fromMaybe (if text "source_type" r == "LEDGER" then "POSTING_DATE" else "SERVICE_PERIOD") (textMaybe "assignment" r)
       , ruInputs = codes (text "source_value" r)
       }

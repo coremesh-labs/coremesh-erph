@@ -98,6 +98,7 @@ data Rule = Rule
   , ruTimeSplit :: Bool -- ^ Leerstand tagesgenau an den Eigentümer (sonst nur auf die Mieter)
   , ruAssignment :: Text -- ^ Zuordnung der Quelle: SERVICE_PERIOD | POSTING_DATE | DOCUMENT_DATE
   , ruInputs :: [Text] -- ^ SUM: Konten; BALANCE: [A, B]
+  , ruKeyTotal :: Text -- ^ DISTRIBUTE nach Bemessung: OBJECTS (Summe der Mietobjekte) | BUILDING (Bemessung des Gebäudes, z. B. MEA 1000 der WEG)
   }
   deriving stock (Show)
 
@@ -151,6 +152,7 @@ data OpInput = OpInput
   , opKeys :: Map Text AllocKey
   , opObjects :: [Text] -- ^ Mietobjekte der Einheit
   , opMeasurements :: [Measurement]
+  , opTotals :: [Measurement] -- ^ Bemessungen der Gebäude der Einheit (Gesamtschlüssel)
   , opOccupancy :: [Occupancy]
   , opPersons :: [PersonSlice]
   , opSources :: [Source]
@@ -204,7 +206,8 @@ data Coverage = Coverage
   }
   deriving stock (Show)
 
-data Acc = Q Text Text | S Text | O Text Text | M Text Text | T Text Text Text | E Text Text | R
+-- | F: Anteil der übrigen Eigentümer (Gesamtschlüssel des Gebäudes, z. B. WEG).
+data Acc = Q Text Text | S Text | O Text Text | M Text Text | T Text Text Text | E Text Text | F Text | R
   deriving stock (Eq, Ord, Show)
 
 accText :: Acc -> Text
@@ -215,6 +218,7 @@ accText = \case
   M c p -> "M:" <> c <> ":" <> p
   T c o p -> "T:" <> c <> ":" <> o <> ":" <> p
   E o p -> "E:" <> o <> ":" <> p
+  F p -> "F:" <> p
   R -> "R:"
 
 poolOf :: Acc -> Maybe Text
@@ -224,6 +228,7 @@ poolOf = \case
   M _ p -> Just p
   T _ _ p -> Just p
   E _ p -> Just p
+  F p -> Just p
   _ -> Nothing
 
 withPool :: Text -> Acc -> Acc
@@ -233,6 +238,7 @@ withPool p = \case
   M c _ -> M c p
   T c o _ -> T c o p
   E o _ -> E o p
+  F _ -> F p
   a -> a
 
 data JLine = JLine
@@ -269,6 +275,7 @@ data OpResult = OpResult
   , orTenantTotal :: Integer
   , orOwnerTotal :: Integer
   , orRounding :: Integer -- ^ Rundung in Cent (verteilt)
+  , orForeignTotal :: Integer -- ^ Anteil der übrigen Eigentümer (Cent)
   }
 
 -- --- Rechenzustand ----------------------------------------------------------------
@@ -310,6 +317,7 @@ computeOpCost inp@OpInput {..} =
     , orTenantTotal = sum (map trCosts tenants)
     , orOwnerTotal = ownerCents
     , orRounding = roundingCents
+    , orForeignTotal = foreignCents
     }
   where
     def = opDef
@@ -322,6 +330,7 @@ computeOpCost inp@OpInput {..} =
     cents a = balance a final `div` scale
     sourcesCents = negate (sum [b | (Q _ _, b) <- Map.toList (stBal final)]) `div` scale
     ownerCents = sum [b `div` scale | (E _ _, b) <- Map.toList (stBal final)]
+    foreignCents = sum [b `div` scale | (F _, b) <- Map.toList (stBal final)]
     labels = Map.union (Map.map adName opAccounts) (Map.map (\c -> Map.findWithDefault c c opCategories) (poolLabels rules))
     tenants =
       [ TenantResult
@@ -358,11 +367,11 @@ computeOpCost inp@OpInput {..} =
       S _ -> True
       O _ _ -> True
       _ -> False
-    distributed = sum (map trCosts tenants) + ownerCents
+    distributed = sum (map trCosts tenants) + ownerCents + foreignCents
     endChecks =
       leftover
         <> [ Check "Summe" (Just sourcesCents) (Just distributed) (if sourcesCents == distributed then Ok else Deviation)
-               "Summe der Quellen = Mieter + Eigentümer (Leerstand, Rundung)"
+               "Summe der Quellen = Mieter + Eigentümer (Leerstand, Rundung) + übrige Eigentümer"
            , Check "Rundung" Nothing (Just roundingCents) Info (roundingText def (length tenants) roundingCents)
            ]
 
@@ -476,8 +485,8 @@ distribute :: OpInput -> Rule -> St -> St
 distribute inp@OpInput {..} r st0 = case Map.lookup (ruKey r) opKeys of
   Nothing -> note Failure (ruleName r) ("Verteilerschlüssel " <> ruKey r <> " gibt es nicht") st0
   Just k -> case akBasis k of
-    "MEASUREMENT" -> toTenants k (toObjects k (measured k) st0)
-    "UNITS" -> toTenants k (toObjects k [(o, 1) | o <- opObjects] st0)
+    "MEASUREMENT" -> toTenants k (toObjects k (withOthers k (measured k)) st0)
+    "UNITS" -> toTenants k (toObjects k (withOthers k [(o, 1) | o <- opObjects]) st0)
     "PERSONS" -> toTenants k (personsDirect k st0)
     "DIRECT" -> toTenants k st0
     b -> note Failure (ruleName r) ("Schlüssel " <> akCode k <> ": Grundlage " <> b <> " wird noch nicht gerechnet") st0
@@ -494,10 +503,19 @@ distribute inp@OpInput {..} r st0 = case Map.lookup (ruKey r) opKeys of
                 , Just iv <- [overlap period (mFrom m, mTo m)]] / fromInteger pdays)
       | o <- opObjects
       ]
+    -- Gesamtschlüssel des Gebäudes (z. B. MEA 1000 der WEG): Rest = übrige Eigentümer
+    withOthers k ws
+      | ruKeyTotal r /= "BUILDING" = map (\(o, w) -> (O o pool, w, rationalText 4 w)) ws
+      | otherwise =
+          let total = sum [toRational (mValue m) * fromInteger (days iv) | m <- opTotals, Just (mType m) == akMeasurement k, Just iv <- [overlap period (mFrom m, mTo m)]] / fromInteger pdays
+              own = sum (map snd ws)
+           in [(O o pool, w, rationalText 4 w) | (o, w) <- ws] <> [(F pool, total - own, "übrige Eigentümer (Gesamt " <> rationalText 4 total <> ")") | total > own]
     -- Topf → Mietobjekte nach Gewicht
     toObjects k ws st =
       let a = balance (S pool) st
-       in if a == 0 then st else splitBook st (S pool) a [(O o pool, w, rationalText 4 w) | (o, w) <- ws] ("(" <> akName k <> ")")
+          missing = ruKeyTotal r == "BUILDING" && not (any (\(acc, _, _) -> acc == F pool) ws)
+          st' = if missing && a /= 0 then note Deviation (ruleName r) ("Gesamtschlüssel " <> akName k <> ": keine größere Bemessung des Gebäudes – verteilt nur auf die Mietobjekte") st else st
+       in if a == 0 then st else splitBook st' (S pool) a ws ("(" <> akName k <> ")")
     -- Topf → Mieter nach Personentagen
     personsDirect k st =
       let a = balance (S pool) st
@@ -568,6 +586,7 @@ roundToCents def step tenants st0 = (st2, rc)
       M _ _ -> True
       T {} -> True
       E _ _ -> True
+      F _ -> True
       _ -> False
     st1 = foldl' (\s (a, b) -> book (mk R a (b - (b `div` scale) * scale) "Abrunden auf Cent") s) st0 (accounts final st0)
     rc = balance R st1 `div` scale

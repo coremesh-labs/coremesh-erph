@@ -533,7 +533,7 @@ opCostTests check = do
   let d = fromGregorian
       y = (d 2025 1 1, d 2025 12 31)
       rule no step kind src val pool cat key =
-        Rule no step "" kind cat src val pool "" 0 key True "SERVICE_PERIOD" []
+        Rule no step "" kind cat src val pool "" 0 key True "SERVICE_PERIOD" [] "OBJECTS"
       rules =
         [ rule 10 1 "COLLECT" "LEDGER" "6300" "WASSER" "Wasser" ""
         , rule 20 1 "COLLECT" "INVOICE" "GRUNDSTEUER" "GRST" "Grundsteuer" ""
@@ -555,6 +555,7 @@ opCostTests check = do
           , opKeys = keys
           , opObjects = ["W1", "W2"]
           , opMeasurements = [Measurement "W1" "WFL" 60 (d 2020 1 1) openEnd, Measurement "W2" "WFL" 40 (d 2020 1 1) openEnd]
+          , opTotals = []
           , opOccupancy = [Occupancy "MV1" "P1" "W1" (d 2025 1 1) (d 2025 12 31), Occupancy "MV2" "P2" "W2" (d 2025 7 1) (d 2025 12 31)]
           , opPersons = [PersonSlice "MV1" 2 (d 2024 1 1) openEnd, PersonSlice "MV2" 1 (d 2025 7 1) openEnd]
           , opSources =
@@ -590,6 +591,20 @@ opCostTests check = do
   let open' = computeOpCost inp {opRules = take 3 rules}
   check "NK: Töpfe offen" ["Offen O:W1:GRST", "Offen S:WASSER"] (sort [chName c | c <- orChecks open', chLevel c == Failure])
   check "NK: Summe weicht ab" [Deviation] [chLevel c | c <- orChecks open', chName c == "Summe"]
+
+  -- Gesamtschlüssel des Gebäudes (WEG): Wasser 1.000,00 nach WFL 100 von 400 – Rest an die übrigen Eigentümer
+  let wegIn =
+          inp
+            { opRules = take 1 rules <> [(rule 50 3 "DISTRIBUTE" "" "" "WASSER" "Wasser" "WFL") {ruKeyTotal = "BUILDING"}]
+            , opSources = take 1 (opSources inp)
+            , opTotals = [Measurement "B1" "WFL" 400 (d 2020 1 1) openEnd]
+            }
+      weg = computeOpCost wegIn
+  check "WEG: MV1 60/400" [15000] [trCosts t | t <- orTenants weg, trContract t == "MV1"]
+  check "WEG: übrige Eigentümer 300/400" 75000 (orForeignTotal weg)
+  check "WEG: Summe" [Ok] [chLevel c | c <- orChecks weg, chName c == "Summe"]
+  let noTotal = computeOpCost wegIn {opTotals = []}
+  check "WEG: ohne Gebäudebemessung Hinweis" [Deviation] [chLevel c | c <- orChecks noTotal, chName c == "Regel 50"]
 
   -- Ebenen: Heizkosten je Wohnung (Eingabe), Summe je Gruppe, Vorauszahlungen, Saldo
   let acc c n b = (c, AccountDef c n b)
