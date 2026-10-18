@@ -4,7 +4,7 @@
 -- |---|---|---|
 -- | ProfitLoss.compute | company_code, period_from, period_to, rent_object_id?, building_id?, entity_id?, group_by? (BUILDING, ENTITY) | message, table, download (CSV) |
 -- | TrialBalance.compute | company_code, fiscal_year, period_from, period_to, building_id?, entity_id?, account_from?, account_to?, only_open? | message, table, download |
--- | AccountSheet.compute | company_code, fiscal_year, account_number, period_from, period_to, building_id?, contract_id?, partner_id? | message, table, download |
+-- | AccountSheet.compute | company_code, fiscal_year, account_number, period_from, period_to, building_id?, entity_id?, contract_id?, partner_id? | message, table, download |
 -- | *.formState | FormStateRequest | Vorbelegung (laufendes Jahr bis heute) |
 -- | LedgerReport.contractAccount | company_code, contract_id, period_from?, period_to? | message, table, download, balance |
 -- | LedgerReport.partnerAccount | partner_id, company_code?, period_from?, period_to? | message, table, download, balance |
@@ -50,7 +50,7 @@ import ProfitLoss.Objects
 import ProfitLoss.Report
 
 version :: Text
-version = "0.2.0"
+version = "0.2.1"
 
 profitLossPlugin :: IORef Settings -> Plugin
 profitLossPlugin ref =
@@ -132,7 +132,8 @@ handler settings call req = case (reqObject req, reqAction req) of
           Just (Object v) -> v
           _ -> mempty
         preset k v = [K.fromText k .= object ["value" .= v] | T.null (text k values)]
-        year = if o == "ProfitLoss" then [] else preset "fiscal_year" y
+        -- Vorbelegung als Text (FieldState.value ist eine Zeichenkette)
+        year = if o == "ProfitLoss" then [] else preset "fiscal_year" (T.pack (show y))
     pure . response $
       object
         [ "fields" .= object (year <> preset "period_from" (iso8601Show (fromGregorian y 1 1)) <> preset "period_to" (iso8601Show today))

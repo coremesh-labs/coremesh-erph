@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name:          profit-loss
-version:       0.2.0
+version:       0.2.1
 synopsis:      Auswertungen des Hauptbuchs: GuV je Gebäude, Saldenliste, Kontoblatt
 description:
   CoreMesh-Plugin in Haskell. Rechnet die Gewinn- und Verlustrechnung aus den

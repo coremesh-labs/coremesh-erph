@@ -44,8 +44,8 @@ reports =
     , ("GuV-Rechnung", "Profit and loss statement", "损益表")
     , ("GuV berechnen", "Compute P&L", "计算损益")
     , [ companyCode
-      , building
       , entity
+      , building
       , Field "rent_object_id" "text" False (lookupOf "RentObject" "object_id" ["designation"] [("company_code", "company_code")]) []
           ("Mietobjekt (leer = alle)", "Rental object (empty = all)", "租赁对象（空 = 全部）")
       , Field "group_by" "select" False Nothing
@@ -62,11 +62,11 @@ reports =
     , ("Summen- und Saldenliste", "Trial balance", "试算平衡表")
     , ("Saldenliste anzeigen", "Show trial balance", "显示试算平衡表")
     , [ companyCode
+      , entity
+      , building
       , fiscalYear
       , periodFrom
       , periodTo
-      , building
-      , entity
       , Field "account_from" "text" False (lookupOf "GLAccountCompany" "account_number" ["account_name"] [("company_code_id", "company_code")]) []
           ("Konto von", "Account from", "科目从")
       , Field "account_to" "text" False (lookupOf "GLAccountCompany" "account_number" ["account_name"] [("company_code_id", "company_code")]) []
@@ -81,10 +81,11 @@ reports =
     , [ companyCode
       , Field "account_number" "text" True (lookupOf "GLAccountCompany" "account_number" ["account_name"] [("company_code_id", "company_code")]) []
           ("Sachkonto", "G/L account", "总账科目")
+      , entity
+      , building
       , fiscalYear
       , periodFrom
       , periodTo
-      , building
       , Field "contract_id" "text" False (lookupOf "Contract" "contract_id" ["designation"] [("company_code", "company_code")]) []
           ("Vertrag (leer = alle)", "Contract (empty = all)", "合同（空 = 全部）")
       , Field "partner_id" "text" False (lookupOf "BusinessPartner" "id" ["search_term", "name1"] []) []
