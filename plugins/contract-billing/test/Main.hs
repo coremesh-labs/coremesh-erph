@@ -550,7 +550,7 @@ opCostTests check = do
           ]
       inp =
         OpInput
-          { opDef = Def "WE1" 100000 "TENANTS_OR_OWNER" (fst y) (snd y)
+          { opDef = Def "WE1" 100000 "TENANTS_OR_OWNER" (fst y) (snd y) False
           , opRules = rules
           , opKeys = keys
           , opObjects = ["W1", "W2"]
@@ -597,6 +597,11 @@ opCostTests check = do
   let open' = computeOpCost inp {opRules = take 3 rules}
   check "NK: Töpfe offen" ["Offen O:W1:GRST", "Offen S:WASSER"] (sort [chName c | c <- orChecks open', chLevel c == Failure])
   check "NK: Summe weicht ab" [Deviation] [chLevel c | c <- orChecks open', chName c == "Summe"]
+  -- Kostenaufstellung (COSTS): sammeln ohne Verteilung – keine Mieter, keine offenen Töpfe
+  let costs = computeOpCost inp {opDef = (opDef inp) {dfCostsOnly = True}, opRules = take 3 rules}
+  check "Kosten: keine Mieter" 0 (length (orTenants costs))
+  check "Kosten: nur Hinweis der Quelle" ["Regel 30"] [chName c | c <- orChecks costs, chLevel c `elem` [Failure, Deviation]]
+  check "Kosten: Töpfe" (Map.fromList [("GRST", 30000), ("HEIZ", 2500), ("WASSER", 100000)]) (orPoolTotals costs)
 
   -- Gesamtschlüssel des Gebäudes (WEG): Wasser 1.000,00 nach WFL 100 von 400 – Rest an die übrigen Eigentümer
   let wegIn =

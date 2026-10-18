@@ -40,7 +40,7 @@ callbackObject = "ContractBillingCache"
 
 billingPlugin :: Cache -> Plugin
 billingPlugin cache =
-  (defaultPlugin "contract-billing" "0.21.0")
+  (defaultPlugin "contract-billing" "0.22.0")
     { pluginDescription = "Vertragsbuchung: Sollstellung der Verträge über die Vorerfassung des Hauptbuchs"
     , pluginCapabilities =
         [ Capability "ContractBilling" ["run", "loanSchedule", "depreciationSchedule", "checkSettlement", "postSettlement", "computeOpCost", "refresh", "cache"] []

@@ -307,7 +307,7 @@ computeOpCostRun cache call p = do
                   | otherwise = advancesOf (codes (ruSourceValue r))
           ]
       accountDefs = Map.fromList [(text "code" a, AccountDef (text "code" a) (text "name" a) (fromMaybe "CONTRACT" (textMaybe "binding" a))) | a <- objects "accounts" p]
-      def = Def unit scale (fromMaybe "TENANTS_OR_OWNER" (textMaybe "rounding_rule" defRec)) from to
+      def = Def unit scale (fromMaybe "TENANTS_OR_OWNER" (textMaybe "rounding_rule" defRec)) from to (textMaybe "mode" defRec == Just "COSTS")
       res =
         computeOpCost
           OpInput
