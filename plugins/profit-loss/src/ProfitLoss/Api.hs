@@ -458,9 +458,9 @@ report _ call objs partners title chosen file items mfrom to perContract = do
     Object o -> Object (KM.insert "balance" (Number (fromInteger (shClosing sh))) o)
     v -> v
 
--- | Posten nur einmal (gleicher Schlüssel aus zwei Abfragen).
+-- | Posten nur einmal (gleicher Schlüssel aus zwei Abfragen; der Datenstrom list hat keine id).
 dedupe :: [Record] -> [Record]
-dedupe = Map.elems . Map.fromList . map (\r -> (text "id" r, r))
+dedupe = Map.elems . Map.fromList . map (\r -> (map (`text` r) ["company_code_id", "fiscal_year", "document_number", "ledger", "line_item_number"], r))
 
 tolerantAll :: Call -> Text -> [(Text, Value)] -> IO [Record]
 tolerantAll call obj ps = do
