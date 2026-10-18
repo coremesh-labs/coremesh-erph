@@ -533,7 +533,7 @@ opCostTests check = do
   let d = fromGregorian
       y = (d 2025 1 1, d 2025 12 31)
       rule no step kind src val pool cat key =
-        Rule no step "" kind cat src val pool "" 0 key True "SERVICE_PERIOD"
+        Rule no step "" kind cat src val pool "" 0 key True "SERVICE_PERIOD" []
       rules =
         [ rule 10 1 "COLLECT" "LEDGER" "6300" "WASSER" "Wasser" ""
         , rule 20 1 "COLLECT" "INVOICE" "GRUNDSTEUER" "GRST" "Grundsteuer" ""
@@ -565,6 +565,8 @@ opCostTests check = do
           , opAdvances = Map.fromList [("MV1", 120000)]
           , opCategories = Map.fromList [("Wasser", "Wasserversorgung")]
           , opCoverage = []
+          , opAccounts = mempty
+          , opRuleValues = mempty
           }
       res = computeOpCost inp
       tenant c = [(trCosts t, trAdvances t, trLines t) | t <- orTenants res, trContract t == c]
@@ -588,6 +590,32 @@ opCostTests check = do
   let open' = computeOpCost inp {opRules = take 3 rules}
   check "NK: Töpfe offen" ["Offen O:W1:GRST", "Offen S:WASSER"] (sort [chName c | c <- orChecks open', chLevel c == Failure])
   check "NK: Summe weicht ab" [Deviation] [chLevel c | c <- orChecks open', chName c == "Summe"]
+
+  -- Ebenen: Heizkosten je Wohnung (Eingabe), Summe je Gruppe, Vorauszahlungen, Saldo
+  let acc c n b = (c, AccountDef c n b)
+      lv =
+        computeOpCost
+          inp
+            { opRules =
+                rules
+                  <> [ rule 80 1 "COLLECT" "INPUT" "HEIZ_IN" "HZ" "" ""
+                     , (rule 100 5 "SUM" "" "" "BK" "" "") {ruInputs = ["WASSER", "ABW", "GRST"]}
+                     , (rule 110 5 "SUM" "" "" "HK" "" "") {ruInputs = ["HEIZ", "HZ"]}
+                     , rule 120 5 "ADVANCE" "BOOKED" "NK" "VBK" "" ""
+                     , (rule 130 6 "BALANCE" "" "" "NBK" "" "") {ruToPool = "GBK", ruInputs = ["BK", "VBK"]}
+                     ]
+            , opSources = opSources inp <> [Source "INPUT" "HEIZ_IN" "IN:1" 40000 (ToTenantObject "MV1" "W1") "" "" 80 Nothing, Source "INPUT" "HEIZ_IN" "IN:2" 10000 (ToTenantObject "MV1" "W2") "" "" 80 Nothing]
+            , opAccounts = Map.fromList [acc "HZ" "Heizkosten" "OBJECT", acc "HK" "Heiz- und Warmwasserkosten" "OBJECT"]
+            , opRuleValues = Map.fromList [(120, Map.fromList [("MV1", 120000)])]
+            }
+      r1 = [(rlObject l, rlAccount l, rlLevel l, rlAmount l) | t <- orTenants lv, trContract t == "MV1", l <- trResults t]
+  check "Ebene 0: Heizkosten je Wohnung" [("W1", "HZ", 0, 40000), ("W2", "HZ", 0, 10000)] [x | x@(_, "HZ", _, _) <- r1]
+  check "Ebene 5: Summe Betriebskosten je Vertrag" [("", "BK", 5, 18000 + 30000 + 55908)] [x | x@(_, "BK", _, _) <- r1]
+  check "Ebene 5: Heizkosten je Wohnung" [("W1", "HK", 5, 40000), ("W2", "HK", 5, 10000)] [x | x@(_, "HK", _, _) <- r1]
+  check "Ebene 6: Guthaben" [("", "GBK", 6, 103908 - 120000)] [x | x@(_, a, 6, _) <- r1, a `elem` ["NBK", "GBK"]]
+  check "Vorauszahlungen aus ADVANCE" [120000] [trAdvances t | t <- orTenants lv, trContract t == "MV1"]
+  check "Buchung je Saldo-Regel" [[PostLine 130 103908 120000]] [trPost t | t <- orTenants lv, trContract t == "MV1"]
+  check "Bezeichnung aus dem Abrechnungskonto" True (("Heizkosten", 50000) `elem` concat [trLines t | t <- orTenants lv, trContract t == "MV1"])
 
   -- Vollständigkeit der Vertragsabrechnungen
   check "Lücken" [(d 2025 1 1, d 2025 5 31), (d 2025 11 1, d 2025 12 31)] (uncovered y [(d 2025 6 1, d 2025 10 31)])
