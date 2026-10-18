@@ -11,6 +11,7 @@ import Data.Text (Text)
 import Data.Time.Calendar
 import System.Exit (exitFailure)
 
+import Billing.Cache (defaultObjectFields)
 import Billing.Data
 import Billing.Depreciation
 import Billing.Loan
@@ -172,7 +173,7 @@ planTests check = do
           , inPosted = [booked "MV-1" "KM" "6000" 2026 1 80000]
           , inCorrectionDate = d 2026 2 20
           , inBackdateFrom = Nothing
-          , inConditionTypes = Map.empty, inDependentTypes = Map.empty, inTaxCodes = Map.empty, inRoundings = Map.empty, inCompanyRounding = Nothing, inDecimals = Map.empty
+          , inConditionTypes = Map.empty, inDependentTypes = Map.empty, inTaxCodes = Map.empty, inRoundings = Map.empty, inCompanyRounding = Nothing, inDecimals = Map.empty, inRentBuildings = Map.empty, inObjectFields = defaultObjectFields
           }
       (docs, msgs) = plan (d 2026 2 28) input
       docOf cid date = [x | x <- docs, cId (dContract x) == cid, dDate x == date]
@@ -197,6 +198,17 @@ planTests check = do
       check "Forderung: Soll Debitor, Haben Erlös" [("1200", "S", 80000), ("6000", "H", 80000)] [(lAccount l, lSide l, lAmount l) | l <- km]
       check "Debitor: Kunde, Vertrag, Objekt" [("rent_contract_id", "MV-1"), ("rent_object_id", "WG001"), ("sd_customer_id", "P1")] (sortFields (head' km))
       check "Erlös: ohne Kunde (ausgeblendet)" [("rent_contract_id", "MV-1"), ("rent_object_id", "WG001")] (sortFields (km !! 1))
+      -- seit 0.18.0: das Gebäude des Mietobjekts auf der Erlöszeile (Spalte aus object_fields),
+      -- nicht auf dem Debitor (Feldstatus blendet aus)
+      let withHouse = input {inRentBuildings = Map.fromList [("WG001", "HAUS1")], inFieldStatus = Map.insert ("RENT_REVENUE", "dimension_custom_1") "OPTIONAL" status}
+          (hdocs, _) = plan (d 2026 2 28) withHouse
+      case [x | x <- hdocs, cId (dContract x) == "MV-1", dDate x == d 2026 2 3] of
+        [h] -> do
+          check "Erlös mit Gebäude" (Just "HAUS1") (lookup "dimension_custom_1" (lFields (dLines h !! 1)))
+          check "Debitor ohne Gebäude" [Nothing] [lookup "dimension_custom_1" (lFields l) | l <- take 1 (dLines h)]
+          let (other, _) = plan (d 2026 2 28) withHouse {inObjectFields = [("Building", "dimension_custom_2")], inFieldStatus = Map.insert ("RENT_REVENUE", "dimension_custom_2") "OPTIONAL" (inFieldStatus withHouse)}
+          check "Spalte aus der Einstellung" [Just "HAUS1"] [lookup "dimension_custom_2" (lFields (dLines x !! 1)) | x <- other, cId (dContract x) == "MV-1", dDate x == d 2026 2 3]
+        hs -> check "Beleg mit Gebäude" 1 (length hs)
       check "Minderung: Seiten getauscht" [("1200", "H", 5000), ("6000", "S", 5000)] [(lAccount l, lSide l, lAmount l) | l <- minus]
       check "Belegart Standard DR" "DR" (dDocumentType x)
     other -> check "ein Beleg im Februar" 1 (length other)
@@ -226,7 +238,7 @@ planTests check = do
                 ]
           , inTaxCodes = Map.fromList [("U19", TaxCode "U19" 19 (Just "7300"))]
           , inRoundings = Map.fromList [("KFM", kfm)]
-          , inDecimals = Map.fromList [("EUR", 2)]
+          , inDecimals = Map.fromList [("EUR", 2)], inRentBuildings = Map.empty, inObjectFields = defaultObjectFields
           }
       (depDocs, depMsgs) = plan (d 2026 1 31) depIn
   check "nachgelagert: keine Meldung" [] depMsgs
@@ -244,7 +256,7 @@ planTests check = do
           , inMeasurements = [Measurement "WG001" "WFL" 83.9 (d 2000 1 1) openEnd]
           , inPosted = []
           , inRoundings = Map.fromList [("KFM", kfm)]
-          , inDecimals = Map.fromList [("EUR", 2)]
+          , inDecimals = Map.fromList [("EUR", 2)], inRentBuildings = Map.empty, inObjectFields = defaultObjectFields
           }
       (qmDocs, qmMsgs) = plan (d 2026 1 31) qm
   check "je Einheit am Hauptobjekt: keine Meldung" [] qmMsgs
@@ -419,7 +431,7 @@ loanTests check = do
           , inContracts = [bank], inConditions = [], inObjects = [], inMeasurements = [], inAccounts = Map.empty, inFieldStatus = Map.empty
           , inLoans = [terms], inLoanPayments = [], inDepreciations = []
           , inPartnerAccounts = Map.fromList [(("BANK", "CREDITOR"), PartnerAccount "BANK" "CREDITOR" (Just "1600") False)]
-          , inPosted = [], inCorrectionDate = d 2026 3 10, inBackdateFrom = Nothing, inConditionTypes = Map.empty, inDependentTypes = Map.empty, inTaxCodes = Map.empty, inRoundings = Map.empty, inCompanyRounding = Nothing, inDecimals = Map.empty
+          , inPosted = [], inCorrectionDate = d 2026 3 10, inBackdateFrom = Nothing, inConditionTypes = Map.empty, inDependentTypes = Map.empty, inTaxCodes = Map.empty, inRoundings = Map.empty, inCompanyRounding = Nothing, inDecimals = Map.empty, inRentBuildings = Map.empty, inObjectFields = defaultObjectFields
           }
       (docs, msgs) = plan (d 2026 2 28) input
   check "Darlehen: keine Meldungen" [] msgs
@@ -457,7 +469,7 @@ depreciationTests check = do
           { inTypes = Map.fromList [("KV", ContractType "KV" "PAYABLE" "CREDITOR" Nothing Nothing False)]
           , inContracts = [kv], inConditions = [], inObjects = [ContractObject "KV-1" "Building" "HAUS1" True (d 2025 7 15) openEnd]
           , inMeasurements = [], inAccounts = Map.empty, inFieldStatus = Map.empty, inLoans = [], inLoanPayments = []
-          , inDepreciations = [terms], inPartnerAccounts = Map.empty, inPosted = [], inCorrectionDate = d 2026 12 31, inBackdateFrom = Nothing, inConditionTypes = Map.empty, inDependentTypes = Map.empty, inTaxCodes = Map.empty, inRoundings = Map.empty, inCompanyRounding = Nothing, inDecimals = Map.empty
+          , inDepreciations = [terms], inPartnerAccounts = Map.empty, inPosted = [], inCorrectionDate = d 2026 12 31, inBackdateFrom = Nothing, inConditionTypes = Map.empty, inDependentTypes = Map.empty, inTaxCodes = Map.empty, inRoundings = Map.empty, inCompanyRounding = Nothing, inDecimals = Map.empty, inRentBuildings = Map.empty, inObjectFields = defaultObjectFields
           }
       (docs, msgs) = plan (d 2026 12 31) input
   check "Abschreibung: keine Meldungen" [] msgs

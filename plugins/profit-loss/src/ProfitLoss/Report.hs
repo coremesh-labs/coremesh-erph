@@ -17,6 +17,8 @@ module ProfitLoss.Report
   , computeReport
   , tableRows
   , tableColumns
+  , tableColumnsBy
+  , tableRowsBy
   , csv
   , formatAmountDe
   , formatDay
@@ -24,6 +26,7 @@ module ProfitLoss.Report
 
 import Data.List (sortOn)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time.Calendar (Day, toGregorian)
@@ -43,6 +46,8 @@ data Settings = Settings
   { setLedger :: Text
   -- ^ Ledger der Einzelposten (führendes Ledger 0L)
   , setSections :: [Section]
+  , setBuildingField :: Text
+  -- ^ Kontierungsspalte der Einzelposten mit dem Gebäude (z. B. dimension_custom_1)
   }
   deriving stock (Eq, Show)
 
@@ -57,6 +62,7 @@ defaultSettings =
         , Section "Sekundäre Kosten" Expense ["SECONDARY_COST"]
         , Section "Neutrales Ergebnis" Income ["NON_OPERATING"]
         ]
+    , setBuildingField = "dimension_custom_1"
     }
 
 -- | Sachkonto mit Bezeichnung und Kontotyp.
@@ -67,11 +73,13 @@ data Account = Account
   }
   deriving stock (Eq, Show)
 
--- | Einzelposten: Konto, Buchungsdatum, Betrag (Hauswährung, kleinste Einheit).
+-- | Einzelposten: Konto, Buchungsdatum, Betrag (Hauswährung, kleinste Einheit),
+-- Gruppe für die Spalten (Gebäude bzw. Wirtschaftseinheit, "" = nicht zugeordnet).
 data Item = Item
   { itAccount :: Text
   , itDate :: Day
   , itAmount :: Integer
+  , itGroup :: Text
   }
   deriving stock (Eq, Show)
 
@@ -136,6 +144,28 @@ tableRows dec Report {..} =
       [secTitle srSection, "", "", ""]
         : [["", accNumber a, accName a, formatAmountDe dec v] | (a, v) <- srAccounts]
         <> [["Summe " <> secTitle srSection, "", "", formatAmountDe dec srTotal]]
+
+-- | Spalten der GuV mit einer Spalte je Gruppe (Bezeichnung) und der Summe.
+tableColumnsBy :: [Text] -> [Text]
+tableColumnsBy labels = ["Bereich", "Konto", "Bezeichnung"] <> labels <> ["Summe"]
+
+-- | Zeilen der GuV je Gruppe: Gesamtbericht und je Gruppe (Schlüssel, Bericht);
+-- Beträge in der Reihenfolge der Gruppen, zuletzt die Summe. Leer = keine Bewegung.
+tableRowsBy :: Int -> Report -> [(Text, Report)] -> [[Text]]
+tableRowsBy dec total groups =
+  concatMap section (rpSections total)
+    <> [["Ergebnis (Gewinn + / Verlust −)", "", ""] <> [amount (rpResult r) | (_, r) <- groups] <> [amount (rpResult total)]]
+  where
+    amount v = if v == 0 then "" else formatAmountDe dec v
+    inGroup r s = lookup (secTitle (srSection s)) [(secTitle (srSection g), g) | g <- rpSections r]
+    section s =
+      ([secTitle (srSection s), "", ""] <> map (const "") groups <> [""])
+        : [ ["", accNumber a, accName a]
+              <> [amount (maybe 0 (\g -> fromMaybe 0 (lookup (accNumber a) [(accNumber b, v') | (b, v') <- srAccounts g])) (inGroup r s)) | (_, r) <- groups]
+              <> [amount v]
+          | (a, v) <- srAccounts s
+          ]
+        <> [["Summe " <> secTitle (srSection s), "", ""] <> [amount (maybe 0 srTotal (inGroup r s)) | (_, r) <- groups] <> [amount (srTotal s)]]
 
 -- | CSV für Tabellenkalkulationen: Semikolon, Dezimalkomma, Kopfzeilen mit den Angaben der Maske.
 csv :: [(Text, Text)] -> [Text] -> [[Text]] -> Text

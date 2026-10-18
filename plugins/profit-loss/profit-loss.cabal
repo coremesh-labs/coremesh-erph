@@ -1,7 +1,7 @@
 cabal-version: 3.0
 name:          profit-loss
-version:       0.1.0
-synopsis:      GuV-Rechnung: Gewinn und Verlust je Buchungskreis, Mietobjekt und Zeitraum
+version:       0.2.0
+synopsis:      Auswertungen des Hauptbuchs: GuV je Gebäude, Saldenliste, Kontoblatt
 description:
   CoreMesh-Plugin in Haskell. Rechnet die Gewinn- und Verlustrechnung aus den
   Einzelposten des Hauptbuchs (Plugin ledger): Konten nach Kontotyp in
@@ -20,7 +20,9 @@ library
   hs-source-dirs:  src
   exposed-modules:
     ProfitLoss.Api
+    ProfitLoss.Ledger
     ProfitLoss.Meta
+    ProfitLoss.Objects
     ProfitLoss.Report
   build-depends:
       base            >= 4.18 && < 5

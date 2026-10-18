@@ -20,6 +20,9 @@ module Billing.Cache
   , info
   , readAll
   , readAllOrEmpty
+  , objectFields
+  , setObjectFields
+  , defaultObjectFields
   ) where
 
 import Control.Exception (try)
@@ -38,7 +41,7 @@ import CoreMesh.Plugin
 
 -- | Ausschnitte der Stammdaten.
 data Slice = Types | Contracts | Conditions | Objects | Measurements | Accounts | FieldStatuses | Loans | LoanPayments | Depreciations
-  | ConditionTypes | DependentTypes | TaxCodes | RoundingRules | ConditionKinds
+  | ConditionTypes | DependentTypes | TaxCodes | RoundingRules | ConditionKinds | RentObjects
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 -- | Quelle: Object, Filterfeld des Buchungskreises (Nothing = gilt für alle), mit Historie.
@@ -59,6 +62,7 @@ source = \case
   TaxCodes -> ("TaxCode", Nothing, False)
   RoundingRules -> ("RoundingRule", Nothing, False)
   ConditionKinds -> ("ContractConditionKind", Just "company_code", False)
+  RentObjects -> ("RentObject", Just "company_code", False)
 
 -- | Objects, deren Events den Cache betreffen (für SystemEvent.Register).
 watched :: [Text]
@@ -82,10 +86,22 @@ data Cache = Cache
   { cEntries :: TVar (Map Key Entry)
   , cTtl :: IORef NominalDiffTime
   , cLoads :: IORef Int
+  , cObjectFields :: IORef [(Text, Text)]
   }
 
 newCache :: IO Cache
-newCache = Cache <$> newTVarIO mempty <*> newIORef 3600 <*> newIORef 0
+newCache = Cache <$> newTVarIO mempty <*> newIORef 3600 <*> newIORef 0 <*> newIORef defaultObjectFields
+
+-- | Kontierung der Vertragsobjekte (Setting object_fields): Objektart → Spalte der
+-- Einzelposten. Ein Mietobjekt bucht zusätzlich sein Gebäude in die Spalte von Building.
+defaultObjectFields :: [(Text, Text)]
+defaultObjectFields = [("Building", "dimension_custom_1"), ("BusinessEntity", "dimension_custom_2")]
+
+objectFields :: Cache -> IO [(Text, Text)]
+objectFields = readIORef . cObjectFields
+
+setObjectFields :: Cache -> [(Text, Text)] -> IO ()
+setObjectFields c = writeIORef (cObjectFields c)
 
 setTtl :: Cache -> NominalDiffTime -> IO ()
 setTtl c = writeIORef (cTtl c)

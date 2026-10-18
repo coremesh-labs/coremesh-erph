@@ -20,6 +20,7 @@ module Billing.Data
   , contract
   , condition
   , contractObject
+  , rentBuilding
   , measurement
   , account
   , posted
@@ -313,6 +314,12 @@ condition r = do
       , kDependent = if text "calc_method" r == "DEPENDENT" then textMaybe "dependent_type" r else Nothing
       , kRounding = textMaybe "rounding_rule" r
       }
+
+-- | Mietobjekt → Gebäude (ohne Gebäude: Nothing).
+rentBuilding :: Record -> Maybe (Text, Text)
+rentBuilding r = case (text "object_id" r, text "building_id" r) of
+  (o, b) | not (T.null o), not (T.null b) -> Just (o, b)
+  _ -> Nothing
 
 contractObject :: Record -> Maybe ContractObject
 contractObject r = do
