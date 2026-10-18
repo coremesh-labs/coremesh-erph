@@ -38,7 +38,7 @@ import CoreMesh.Plugin
 
 -- | Ausschnitte der Stammdaten.
 data Slice = Types | Contracts | Conditions | Objects | Measurements | Accounts | FieldStatuses | Loans | LoanPayments | Depreciations
-  | ConditionTypes | DependentTypes | TaxCodes | RoundingRules
+  | ConditionTypes | DependentTypes | TaxCodes | RoundingRules | ConditionKinds
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 -- | Quelle: Object, Filterfeld des Buchungskreises (Nothing = gilt für alle), mit Historie.
@@ -58,10 +58,11 @@ source = \case
   DependentTypes -> ("ContractDependentType", Just "company_code", False)
   TaxCodes -> ("TaxCode", Nothing, False)
   RoundingRules -> ("RoundingRule", Nothing, False)
+  ConditionKinds -> ("ContractConditionKind", Just "company_code", False)
 
 -- | Objects, deren Events den Cache betreffen (für SystemEvent.Register).
 watched :: [Text]
-watched = [o | s <- [minBound .. maxBound], let (o, _, _) = source s] <> ["ContractConditionKind"]
+watched = [o | s <- [minBound .. maxBound], let (o, _, _) = source s]
 
 -- | Objects, deren Datensätze ein Event außerdem ändert: Die Kondition trägt
 -- is_template aus dem Abrechnungsweg der Vertragsart und der Konditionsart (seit 0.14.0).
