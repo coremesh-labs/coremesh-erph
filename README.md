@@ -21,7 +21,7 @@ coremesh-labs/
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
 | `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL; Einzelpreis je Einheit, nachgelagerte Konditionen (Steuer, Prozent; Zuschlag oder Anteil), Rundungsregeln, Tilgungsplan bis Stichtag, Positionen (derselbe Gegenstand mehrfach), je Einheit ohne Objekt = Bemessung des Hauptobjekts, keine Sollstellung bei Abrechnungsweg Eingangsrechnung, Gebäude des Vertragsobjekts auf Erlös- und Aufwandszeilen (Einstellung object_fields) | 0.18.0 |
-| `profit-loss` | `ProfitLoss`, `TrialBalance`, `AccountSheet`, `PartnerBalance`, `LedgerReport` | Auswertungen des Hauptbuchs: GuV je Buchungskreis, Gebäude, Wirtschaftseinheit oder Mietobjekt (wahlweise Spalte je Gebäude), Summen- und Saldenliste und Kontoblatt je Gebäude oder Wirtschaftseinheit mit laufendem Saldo, Debitoren und Kreditoren je Abstimmkonto mit Summen, Vertrags- und Partnerkonto sowie Kontostand für die Aktionen am Vertrag und Geschäftspartner – Bildschirm und CSV, nichts wird gespeichert | 0.3.0 |
+| `profit-loss` | `ProfitLoss`, `TrialBalance`, `AccountSheet`, `PartnerAccounts`, `LedgerReport` | Auswertungen des Hauptbuchs: GuV je Buchungskreis, Gebäude, Wirtschaftseinheit oder Mietobjekt (wahlweise Spalte je Gebäude), Summen- und Saldenliste und Kontoblatt je Gebäude oder Wirtschaftseinheit mit laufendem Saldo, Debitoren und Kreditoren je Abstimmkonto mit Summen, Vertrags- und Partnerkonto sowie Kontostand für die Aktionen am Vertrag und Geschäftspartner – Bildschirm und CSV, nichts wird gespeichert | 0.3.0 |
 
 ## Bauen, testen, starten
 

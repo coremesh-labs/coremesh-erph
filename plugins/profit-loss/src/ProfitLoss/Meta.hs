@@ -92,7 +92,7 @@ reports =
           ("Geschäftspartner (leer = alle)", "Business partner (empty = all)", "业务伙伴（空 = 全部）")
       ]
     )
-  , ( "PartnerBalance"
+  , ( "PartnerAccounts"
     , "icon-users"
     , ("Debitoren und Kreditoren", "Customers and suppliers", "客户与供应商")
     , ("Partnerkonten anzeigen", "Show partner accounts", "显示伙伴账户")
