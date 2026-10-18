@@ -53,6 +53,7 @@ module Billing.OpCost
   , AccountDef (..)
   , ResLine (..)
   , PostLine (..)
+  , Detail (..)
   , computeOpCost
   , accText
   , scaledText
@@ -60,6 +61,7 @@ module Billing.OpCost
   , days
   ) where
 
+import Control.Monad (mfilter)
 import Data.List (sortOn)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -264,6 +266,7 @@ data TenantResult = TenantResult
   , trLines :: [(Text, Integer)] -- ^ Kostenart → Cent
   , trResults :: [ResLine] -- ^ Ebenen
   , trPost :: [PostLine]
+  , trDetails :: [Detail]
   }
   deriving stock (Show)
 
@@ -276,6 +279,7 @@ data OpResult = OpResult
   , orOwnerTotal :: Integer
   , orRounding :: Integer -- ^ Rundung in Cent (verteilt)
   , orForeignTotal :: Integer -- ^ Anteil der übrigen Eigentümer (Cent)
+  , orPoolTotals :: Map Text Integer -- ^ Kosten je Topf der Einheit (Cent)
   }
 
 -- --- Rechenzustand ----------------------------------------------------------------
@@ -284,7 +288,37 @@ data St = St
   { stBal :: Map Acc Integer
   , stJournal :: [JLine] -- ^ umgekehrt
   , stNotes :: [Check] -- ^ umgekehrt
+  , stShares :: [Share] -- ^ Anteile der Verteilung (umgekehrt)
   }
+
+-- | Anteil einer Verteilung: Ziel, Quelle, Gewicht / Summe, Schlüssel; Stufe
+-- OBJECT (Topf → Mietobjekt) oder TENANT (Mietobjekt bzw. Topf → Mieter).
+data Share = Share
+  { shTo :: Acc
+  , shFrom :: Acc
+  , shWeight :: Rational
+  , shTotal :: Rational
+  , shKey :: Text
+  , shStage :: Text
+  }
+
+-- | Rechenweg eines Mieterkontos der Ebene 0 (für das Abrechnungsschreiben):
+-- Gesamtkosten des Topfs der Einheit, Schlüssel mit Gewicht und Summe,
+-- Nutzung (Tage bzw. Personentage) und Faktor = Anteil des Mieters.
+data Detail = Detail
+  { dtAccount :: Text
+  , dtObject :: Text -- ^ "" = Vertrag
+  , dtTotal :: Integer -- ^ Cent, Kosten des Topfs der Einheit
+  , dtKey :: Text
+  , dtWeight :: Maybe Rational
+  , dtWeightTotal :: Maybe Rational
+  , dtUse :: Maybe Rational -- ^ Tage bzw. Personentage des Mieters
+  , dtUseTotal :: Maybe Rational
+  , dtUseKey :: Text
+  , dtFactor :: Rational
+  , dtAmount :: Integer -- ^ Cent
+  }
+  deriving stock (Eq, Show)
 
 book :: JLine -> St -> St
 book l st
@@ -318,13 +352,14 @@ computeOpCost inp@OpInput {..} =
     , orOwnerTotal = ownerCents
     , orRounding = roundingCents
     , orForeignTotal = foreignCents
+    , orPoolTotals = Map.map (`div` scale) poolTotals
     }
   where
     def = opDef
     scale = dfScale def
     rules = sortOn (\r -> (ruStep r, ruNo r)) opRules
     lastStep = maybe 0 ruStep (listToMaybe (reverse rules))
-    afterRules = foldl' (flip (applyRule inp)) (St mempty [] []) rules
+    afterRules = foldl' (flip (applyRule inp)) (St mempty [] [] []) rules
     (final, roundingCents) = roundToCents def (lastStep + 1) (tenantIds inp) afterRules
     journal = reverse (stJournal final)
     cents a = balance a final `div` scale
@@ -345,6 +380,7 @@ computeOpCost inp@OpInput {..} =
           , trLines = ls
           , trResults = rs
           , trPost = Map.findWithDefault [] c posts
+          , trDetails = [d | (a, _) <- Map.toList (stBal final), Just (c', _, _) <- [tenantPool a], c' == c, Just d <- [detail a]]
           }
       | (c, os@(o0 : _)) <- Map.toList (Map.fromListWith (flip (<>)) [(ocContract o, [o]) | o <- opOccupancy])
       , let partner = ocPartner o0
@@ -355,6 +391,34 @@ computeOpCost inp@OpInput {..} =
               ]
             rs = [l | l <- resultLines, rlContract l == c]
       ]
+    -- Kosten je Topf der Einheit: alles, was aus Quellen in den Topf gebucht wurde
+    poolTotals = Map.fromListWith (+) [(p, jAmount l) | l <- journal, Q _ _ <- [jCredit l], Just p <- [poolOf (jDebit l)]]
+    shares = stShares final
+    shareTo a = listToMaybe [x | x <- shares, shTo x == a]
+    detail a = case tenantPool a of
+      Nothing -> Nothing
+      Just (_, o, p) ->
+        let tenantStep = shareTo a
+            objectStep = if T.null o then Nothing else shareTo (O o p)
+            -- Schlüssel: Topf → Mietobjekt, bei Personen Topf → Mieter
+            keyStep = maybe (mfilter ((== "OBJECT") . shStage) tenantStep) Just objectStep
+            ratio x = shWeight x / shTotal x
+            factor = maybe 1 ratio objectStep * maybe 1 ratio tenantStep
+            -- direkt beim Mieter (Eingabe, Kontierung): Faktor 1
+         in Just
+              Detail
+                { dtAccount = p
+                , dtObject = o
+                , dtTotal = Map.findWithDefault 0 p poolTotals `div` scale
+                , dtKey = maybe "" shKey keyStep
+                , dtWeight = shWeight <$> keyStep
+                , dtWeightTotal = shTotal <$> keyStep
+                , dtUse = shWeight <$> mfilter ((== "TENANT") . shStage) tenantStep
+                , dtUseTotal = shTotal <$> mfilter ((== "TENANT") . shStage) tenantStep
+                , dtUseKey = maybe "" shKey (mfilter ((== "TENANT") . shStage) tenantStep)
+                , dtFactor = factor
+                , dtAmount = cents a
+                }
     level0 = [(c, o, p, cents a) | (a, _) <- Map.toList (stBal final), Just (c, o, p) <- [tenantPool a], cents a /= 0]
     (resultLines, posts) = levels inp level0
     advanceRules = [r | r <- rules, ruKind r == "ADVANCE"]
@@ -516,12 +580,12 @@ distribute inp@OpInput {..} r st0 = case Map.lookup (ruKey r) opKeys of
       let a = balance (S pool) st
           missing = ruKeyTotal r == "BUILDING" && not (any (\(acc, _, _) -> acc == F pool) ws)
           st' = if missing && a /= 0 then note Deviation (ruleName r) ("Gesamtschlüssel " <> akName k <> ": keine größere Bemessung des Gebäudes – verteilt nur auf die Mietobjekte") st else st
-       in if a == 0 then st else splitBook st' (S pool) a ws ("(" <> akName k <> ")")
+       in if a == 0 then st else splitBook "OBJECT" (akName k) st' (S pool) a ws ("(" <> akName k <> ")")
     -- Topf → Mieter nach Personentagen
     personsDirect k st =
       let a = balance (S pool) st
           ws = [(M c pool, w, tshow w <> " Personentage") | (c, w) <- Map.toList (personDays inp Nothing)]
-       in if a == 0 then st else splitBook st (S pool) a [(acc, fromInteger w, t) | (acc, w, t) <- ws] ("(" <> akName k <> ")")
+       in if a == 0 then st else splitBook "OBJECT" (akName k) st (S pool) a [(acc, fromInteger w, t) | (acc, w, t) <- ws] ("(" <> akName k <> ")")
     -- Mietobjekt → Mieter und Leerstand
     toTenants k st = foldl' (objectToTenants k) st (accounts isPoolObject st)
     isPoolObject = \case
@@ -544,14 +608,15 @@ distribute inp@OpInput {..} r st0 = case Map.lookup (ruKey r) opKeys of
               | null tenantWeights = [(E o pool, 1, "kein Mieter")]
               | ruTimeSplit r && akBasis k /= "PERSONS" && vacancy > 0 = tenantWeights <> [(E o pool, fromInteger vacancy, tshow vacancy <> " Tage Leerstand")]
               | otherwise = tenantWeights
-         in splitBook st acc b weights ("Objekt " <> o)
+         in splitBook "TENANT" (if akBasis k == "PERSONS" then akName k else "Tage") st acc b weights ("Objekt " <> o)
       _ -> st
     merge (n1, f1, t1) (n2, f2, t2) = (n1 + n2, min f1 f2, max t1 t2)
     -- Betrag nach Gewichten aufteilen, jeden Anteil abrunden, Rest auf R:
-    splitBook st from amount ws label =
+    splitBook stage keyName st0' from amount ws label =
       let total = sum [w | (_, w, _) <- ws]
+          st = st0' {stShares = [Share to from w total keyName stage | (to, w, _) <- ws, w > 0] <> stShares st0'}
        in if total <= 0
-            then note Info (ruleName r) ("Schlüsselsumme 0 – " <> accText from <> " " <> scaledText scale amount <> " bleibt offen") st
+            then note Info (ruleName r) ("Schlüsselsumme 0 – " <> accText from <> " " <> scaledText scale amount <> " bleibt offen") st0'
             else
               let shares = [(to, floorR (fromInteger amount * w / total), w, t) | (to, w, t) <- ws, w > 0]
                   rest = amount - sum [s | (_, s, _, _) <- shares]
