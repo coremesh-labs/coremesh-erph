@@ -8,6 +8,8 @@
 --   * S:<Topf>            Topf der Einheit
 --   * O:<Objekt>:<Topf>   Mietobjekt
 --   * M:<Vertrag>:<Topf>  Mieter (Vertrag)
+--   * T:<Vertrag>:<Objekt>:<Topf> Mieter je Mietobjekt (Verteilung über das Objekt,
+--                         Eingabe je Wohnung) – Ausweis je Wohnung möglich
 --   * E:<Objekt>:<Topf>   Eigentümer (Leerstand, Rundung)
 --   * R:                  Rundung
 --
@@ -25,6 +27,13 @@
 -- Rundungsregel an die Mieter (Rest ≥ Anzahl Mieter: je Mieter gleich viel,
 -- der Rest an den Eigentümer) oder an den Eigentümer. Jede Buchung trägt ihre
 -- Formel – das Journal ist der Rechenweg.
+--
+-- Danach die Ebenen (seit 0.19.0): Ebene 0 sind die Salden der Mieter je
+-- Abrechnungskonto (Topf), je Wohnung, wenn das Konto „je Mietobjekt“
+-- ausgewiesen wird, sonst je Vertrag. Die Regeln SUM (Summe von Konten),
+-- ADVANCE (Vorauszahlungen) und BALANCE (A − B: Nachzahlung bzw. Guthaben)
+-- erzeugen in ihrem Schritt die höheren Ebenen – gespeichert als
+-- Abrechnung + Vertrag + Wohnung + Konto + Ebene, mit Formel.
 module Billing.OpCost
   ( Def (..)
   , Rule (..)
@@ -41,6 +50,9 @@ module Billing.OpCost
   , JLine (..)
   , TenantResult (..)
   , OpResult (..)
+  , AccountDef (..)
+  , ResLine (..)
+  , PostLine (..)
   , computeOpCost
   , accText
   , scaledText
@@ -85,6 +97,7 @@ data Rule = Rule
   , ruKey :: Text
   , ruTimeSplit :: Bool -- ^ Leerstand tagesgenau an den Eigentümer (sonst nur auf die Mieter)
   , ruAssignment :: Text -- ^ Zuordnung der Quelle: SERVICE_PERIOD | POSTING_DATE | DOCUMENT_DATE
+  , ruInputs :: [Text] -- ^ SUM: Konten; BALANCE: [A, B]
   }
   deriving stock (Show)
 
@@ -97,7 +110,7 @@ data AllocKey = AllocKey
   deriving stock (Show)
 
 -- | Kontierung einer Quelle.
-data Target = ToPool | ToObject Text | ToTenant Text
+data Target = ToPool | ToObject Text | ToTenant Text | ToTenantObject Text Text
   deriving stock (Eq, Show)
 
 -- | Eine Kostenposition der Einheit im Zeitraum (schon zeitanteilig), in Cent.
@@ -144,7 +157,37 @@ data OpInput = OpInput
   , opAdvances :: Map Text Integer -- ^ Vorauszahlungen je Vertrag (Cent)
   , opCategories :: Map Text Text -- ^ Kostenart → Bezeichnung (Ausweis beim Mieter)
   , opCoverage :: [Coverage] -- ^ Vollständigkeit der Vertragsabrechnungen je Sammelregel und Vertrag
+  , opAccounts :: Map Text AccountDef -- ^ Abrechnungskonten (Bezeichnung, Ausweis)
+  , opRuleValues :: Map Integer (Map Text Integer) -- ^ ADVANCE: Regel → Vertrag → Cent
   }
+
+-- | Abrechnungskonto (Topf): Bezeichnung auf der Abrechnung, Ausweis je
+-- Mietobjekt (OBJECT) oder je Vertrag (CONTRACT).
+data AccountDef = AccountDef
+  { adCode :: Text
+  , adName :: Text
+  , adBinding :: Text
+  }
+  deriving stock (Show)
+
+-- | Ergebnis einer Ebene: Vertrag, Mietobjekt ("" = Vertrag), Konto, Ebene, Cent.
+data ResLine = ResLine
+  { rlContract :: Text
+  , rlObject :: Text
+  , rlAccount :: Text
+  , rlLevel :: Integer
+  , rlAmount :: Integer
+  , rlFormula :: Text
+  }
+  deriving stock (Eq, Show)
+
+-- | Buchung einer Saldo-Regel je Mieter: Kosten (A) und Vorauszahlungen (B).
+data PostLine = PostLine
+  { plRule :: Integer
+  , plCost :: Integer
+  , plAdvance :: Integer
+  }
+  deriving stock (Eq, Show)
 
 -- | Vollständigkeit einer Quelle Vertragsabrechnung: welcher Teil des
 -- Zeitraums (innerhalb der Vertragslaufzeit) durch gebuchte Abrechnungen
@@ -161,7 +204,7 @@ data Coverage = Coverage
   }
   deriving stock (Show)
 
-data Acc = Q Text Text | S Text | O Text Text | M Text Text | E Text Text | R
+data Acc = Q Text Text | S Text | O Text Text | M Text Text | T Text Text Text | E Text Text | R
   deriving stock (Eq, Ord, Show)
 
 accText :: Acc -> Text
@@ -170,6 +213,7 @@ accText = \case
   S p -> "S:" <> p
   O o p -> "O:" <> o <> ":" <> p
   M c p -> "M:" <> c <> ":" <> p
+  T c o p -> "T:" <> c <> ":" <> o <> ":" <> p
   E o p -> "E:" <> o <> ":" <> p
   R -> "R:"
 
@@ -178,6 +222,7 @@ poolOf = \case
   S p -> Just p
   O _ p -> Just p
   M _ p -> Just p
+  T _ _ p -> Just p
   E _ p -> Just p
   _ -> Nothing
 
@@ -186,6 +231,7 @@ withPool p = \case
   S _ -> S p
   O o _ -> O o p
   M c _ -> M c p
+  T c o _ -> T c o p
   E o _ -> E o p
   a -> a
 
@@ -210,6 +256,8 @@ data TenantResult = TenantResult
   , trCosts :: Integer -- ^ Cent
   , trAdvances :: Integer
   , trLines :: [(Text, Integer)] -- ^ Kostenart → Cent
+  , trResults :: [ResLine] -- ^ Ebenen
+  , trPost :: [PostLine]
   }
   deriving stock (Show)
 
@@ -274,7 +322,7 @@ computeOpCost inp@OpInput {..} =
     cents a = balance a final `div` scale
     sourcesCents = negate (sum [b | (Q _ _, b) <- Map.toList (stBal final)]) `div` scale
     ownerCents = sum [b `div` scale | (E _ _, b) <- Map.toList (stBal final)]
-    labels = Map.map (\c -> Map.findWithDefault c c opCategories) (poolLabels rules)
+    labels = Map.union (Map.map adName opAccounts) (Map.map (\c -> Map.findWithDefault c c opCategories) (poolLabels rules))
     tenants =
       [ TenantResult
           { trContract = c
@@ -283,13 +331,24 @@ computeOpCost inp@OpInput {..} =
           , trFrom = minimum (map ocFrom os)
           , trTo = maximum (map ocTo os)
           , trCosts = sum (map snd ls)
-          , trAdvances = Map.findWithDefault 0 c opAdvances
+          , trAdvances = if null advanceRules then Map.findWithDefault 0 c opAdvances else sum [rlAmount l | l <- rs, rlAccount l `elem` advancePools]
           , trLines = ls
+          , trResults = rs
+          , trPost = Map.findWithDefault [] c posts
           }
       | (c, os@(o0 : _)) <- Map.toList (Map.fromListWith (flip (<>)) [(ocContract o, [o]) | o <- opOccupancy])
       , let partner = ocPartner o0
-            ls = [(Map.findWithDefault p p labels, cents a) | (a@(M c' p), _) <- Map.toList (stBal final), c' == c, cents a /= 0]
+            ls =
+              [ (Map.findWithDefault p p labels, v)
+              | (p, v) <- Map.toList (Map.fromListWith (+) [(p, cents a) | (a, _) <- Map.toList (stBal final), Just (c', _, p) <- [tenantPool a], c' == c])
+              , v /= 0
+              ]
+            rs = [l | l <- resultLines, rlContract l == c]
       ]
+    level0 = [(c, o, p, cents a) | (a, _) <- Map.toList (stBal final), Just (c, o, p) <- [tenantPool a], cents a /= 0]
+    (resultLines, posts) = levels inp level0
+    advanceRules = [r | r <- rules, ruKind r == "ADVANCE"]
+    advancePools = map ruPool advanceRules
     leftover =
       [ Check ("Offen " <> accText a) Nothing (Just (b `div` scale)) Failure
           ("Kosten bleiben liegen: " <> scaledText scale b <> " – keine Verteilregel oder Schlüsselsumme 0")
@@ -306,6 +365,56 @@ computeOpCost inp@OpInput {..} =
                "Summe der Quellen = Mieter + Eigentümer (Leerstand, Rundung)"
            , Check "Rundung" Nothing (Just roundingCents) Info (roundingText def (length tenants) roundingCents)
            ]
+
+-- | Mieterkonto: Vertrag, Mietobjekt ("" = Vertrag), Topf.
+tenantPool :: Acc -> Maybe (Text, Text, Text)
+tenantPool = \case
+  M c p -> Just (c, "", p)
+  T c o p -> Just (c, o, p)
+  _ -> Nothing
+
+-- | Ebenen: Ebene 0 aus den Mieterkonten (je Wohnung nur bei Ausweis „je
+-- Mietobjekt“), dann SUM, ADVANCE und BALANCE in der Reihenfolge Schritt, Regel.
+levels :: OpInput -> [(Text, Text, Text, Integer)] -> ([ResLine], Map Text [PostLine])
+levels OpInput {..} level0 = (concat (reverse acc), Map.map reverse postsRev)
+  where
+    perObject p = maybe False ((== "OBJECT") . adBinding) (Map.lookup p opAccounts)
+    base =
+      [ ResLine c o p 0 v "Ebene 0 (Verteilung)"
+      | ((c, o, p), v) <- Map.toList (Map.fromListWith (+) [((c, if perObject p then o else "", p), v) | (c, o, p, v) <- level0])
+      ]
+    contracts = Map.keys (Map.fromList [(ocContract o, ()) | o <- opOccupancy])
+    resultRules = sortOn (\r -> (ruStep r, ruNo r)) [r | r <- opRules, ruKind r `elem` ["SUM", "ADVANCE", "BALANCE"]]
+    (acc, postsRev) = foldl' step ([base], mempty) resultRules
+    step (done, ps) r =
+      let have = concat done
+          get c p = [l | l <- have, rlContract l == c, rlAccount l == p]
+          total c p = sum (map rlAmount (get c p))
+          amt = formatAmount 2
+       in case ruKind r of
+            "SUM" ->
+              let new =
+                    [ ResLine c o (ruPool r) (ruStep r) (sum (map rlAmount ls)) (T.intercalate " + " [rlAccount l <> " " <> amt (rlAmount l) | l <- ls])
+                    | c <- contracts
+                    , (o, ls) <- Map.toList (Map.fromListWith (flip (<>)) [(if perObject (ruPool r) then rlObject l else "", [l]) | p <- ruInputs r, l <- get c p])
+                    ]
+               in (new : done, ps)
+            "ADVANCE" ->
+              let vals = Map.findWithDefault mempty (ruNo r) opRuleValues
+                  new = [ResLine c "" (ruPool r) (ruStep r) v (ruDescription r) | c <- contracts, Just v <- [Map.lookup c vals]]
+               in (new : done, ps)
+            "BALANCE" -> case ruInputs r of
+              [a, b] ->
+                let one c =
+                      let va = total c a
+                          vb = total c b
+                          d = va - vb
+                          to = if d < 0 && not (T.null (ruToPool r)) then ruToPool r else ruPool r
+                       in (ResLine c "" to (ruStep r) d (a <> " " <> amt va <> " − " <> b <> " " <> amt vb), PostLine (ruNo r) va vb)
+                    rows = [one c | c <- contracts, not (null (get c a)) || not (null (get c b))]
+                 in (map fst rows : done, foldl' (\m (l, pl) -> Map.insertWith (<>) (rlContract l) [pl] m) ps rows)
+              _ -> (done, ps)
+            _ -> (done, ps)
 
 -- | Vertrag je Mieter der Einheit (Nutzung im Zeitraum).
 tenantIds :: OpInput -> [Text]
@@ -325,6 +434,7 @@ applyRule inp r = case ruKind r of
   "COLLECT" -> collect inp r
   "TRANSFER" -> transfer inp r
   "DISTRIBUTE" -> distribute inp r
+  k | k `elem` ["SUM", "ADVANCE", "BALANCE"] -> id -- Ebenen nach der Verteilung
   k -> note Failure (ruleName r) ("unbekannte Art " <> k)
 
 ruleName :: Rule -> Text
@@ -349,6 +459,7 @@ collect OpInput {..} r st0
             ToPool -> S pool
             ToObject o -> O o pool
             ToTenant c -> M c pool
+            ToTenantObject c o -> T c o pool
        in warn s . book (line r to (Q (soType s) (soValue s)) (soAmount s * scale) (soFormula s) (soRef s) (category r (soCategory s)))
     warn s = maybe id (note Deviation (ruleName r)) (soWarning s)
 
@@ -402,11 +513,11 @@ distribute inp@OpInput {..} r st0 = case Map.lookup (ruKey r) opKeys of
         let occ = [x | x <- opOccupancy, ocObject x == o]
             tenantWeights
               | akBasis k == "PERSONS" =
-                  [ (M c pool, fromInteger w, tshow w <> " Personentage")
+                  [ (T c o pool, fromInteger w, tshow w <> " Personentage")
                   | (c, w) <- Map.toList (personDays inp (Just o)), w > 0
                   ]
               | otherwise =
-                  [ (M c pool, fromInteger n, tshow n <> " Tage " <> formatDay f <> "–" <> formatDay t)
+                  [ (T c o pool, fromInteger n, tshow n <> " Tage " <> formatDay f <> "–" <> formatDay t)
                   | (c, (n, f, t)) <- Map.toList (Map.fromListWith merge [(ocContract x, (days (ocFrom x, ocTo x), ocFrom x, ocTo x)) | x <- occ])
                   ]
             vacancy = pdays - covered [(ocFrom x, ocTo x) | x <- occ]
@@ -455,6 +566,7 @@ roundToCents def step tenants st0 = (st2, rc)
     mk dr cr amt txt = JLine step 0 dr cr amt txt "" "Rundung"
     final = \case
       M _ _ -> True
+      T {} -> True
       E _ _ -> True
       _ -> False
     st1 = foldl' (\s (a, b) -> book (mk R a (b - (b `div` scale) * scale) "Abrunden auf Cent") s) st0 (accounts final st0)

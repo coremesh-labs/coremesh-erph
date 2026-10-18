@@ -7,7 +7,7 @@
 -- | ContractBilling.depreciationSchedule | company_code, contract_id | Abschreibungsplan (message, table) |
 -- | ContractBilling.checkSettlement | company_code, contract_id, period_from, advance_types, tolerance | Prüfungen (message, table) |
 -- | ContractBilling.postSettlement | wie checkSettlement | prüfen, vorerfassen, ggf. buchen, vermerken |
--- | ContractBilling.computeOpCost | company_code, definition, rules, keys, categories, period_from, period_to | Nebenkostenabrechnung: Journal, Ergebnis je Mieter, Prüfungen |
+-- | ContractBilling.computeOpCost | company_code, definition, rules, keys, categories, accounts, inputs, period_from, period_to | Nebenkostenabrechnung: Journal, Ergebnis je Mieter mit Ebenen (results) und Buchungszeilen (post_lines), Belegung (occupancy), Prüfungen |
 -- | ContractBilling.refresh | – | Cache des Mandanten verwerfen |
 -- | ContractBilling.cache | – | Zustand des Caches (Diagnose) |
 -- | ContractBillingCache.onEvent | SystemEvent | betroffenen Ausschnitt verwerfen |
@@ -40,7 +40,7 @@ callbackObject = "ContractBillingCache"
 
 billingPlugin :: Cache -> Plugin
 billingPlugin cache =
-  (defaultPlugin "contract-billing" "0.18.0")
+  (defaultPlugin "contract-billing" "0.19.0")
     { pluginDescription = "Vertragsbuchung: Sollstellung der Verträge über die Vorerfassung des Hauptbuchs"
     , pluginCapabilities =
         [ Capability "ContractBilling" ["run", "loanSchedule", "depreciationSchedule", "checkSettlement", "postSettlement", "computeOpCost", "refresh", "cache"] []

@@ -14,7 +14,14 @@
 --   * INVOICE: gebuchte Eingangsrechnungen, Positionen der Kostenart;
 --     Leistungszeitraum anteilig, ohne Leistungszeitraum das Buchungsdatum;
 --   * CONTRACT_SETTLEMENT: gebuchte Vertragsabrechnungen (WEG, Versorger),
---     Positionen der Kostenart, anteilig nach Abrechnungszeitraum.
+--     Positionen der Kostenart, anteilig nach Abrechnungszeitraum;
+--   * INPUT (seit 0.19.0): Eingaben am Lauf (Konto = Wert der Regel) – mit
+--     Vertrag und Wohnung auf den Mieter je Wohnung, mit Vertrag auf den
+--     Mieter, nur mit Wohnung auf das Objekt, sonst in den Topf.
+--
+-- LEDGER: mehrere Sachkonten mit Komma (z. B. Personal- und Materialkosten).
+-- ADVANCE (Vorauszahlungen einer Ebene): BOOKED = Sollstellungen der
+-- Konditionsarten (anteilig), INPUT = Eingaben am Lauf je Vertrag.
 module Billing.OpCostRun
   ( computeOpCostRun
   ) where
@@ -133,9 +140,9 @@ computeOpCostRun cache call p = do
       <$> mapM
         ( \r -> do
             -- Regel und Einzelposten: reine Kontonummer (ledger 0.15.0); der Filter des Hauptbuchs kürzt Altbestand mit Präfix
-            items <- readAll sys "JournalEntryItem" [("company_code_id", String cc), ("account_number", String (ruSourceValue r))]
+            items <- concat <$> mapM (\acc -> readAll sys "JournalEntryItem" [("company_code_id", String cc), ("account_number", String acc)]) (codes (ruSourceValue r))
             pure
-              [ Source "LEDGER" (ruSourceValue r) ref amt tgt formula "" (ruNo r) Nothing
+              [ Source "LEDGER" (text "account_number" it) ref amt tgt formula "" (ruNo r) Nothing
               | it <- items
               , let docNo = text "document_number" it
               , Just dl <- [dated r (day "posting_date" it) (join (Map.lookup (docNo, text "fiscal_year" it) docDates))]
@@ -254,16 +261,46 @@ computeOpCostRun cache call p = do
               , not (null covered) || previous || not (null unposted)
               ]
         pure (srcs, covs)
+  -- Eingaben am Lauf (Heizkosten, CO2-Gutschrift, WEG-Gesamtkosten, Vorauszahlungen)
+  let inputs = [(text "account" i, text "contract_id" i, text "rent_object_id" i, a) | i <- objects "inputs" p, Just a <- [int "amount" i]]
+      inputSources =
+        [ Source "INPUT" acc ("IN:" <> acc <> ":" <> c <> ":" <> o) a tgt ("Eingabe " <> acc <> textSuffix c <> textSuffix o <> ": " <> formatAmount 2 a) "" (ruNo r) Nothing
+        | r <- collects "INPUT"
+        , (acc, c, o, a) <- inputs
+        , acc == ruSourceValue r
+        , Just tgt <- [inputTarget c o]
+        ]
+      inputTarget c o
+        | not (T.null c) = if c `Set.member` tenantSet then Just (if T.null o then ToTenant c else ToTenantObject c o) else Nothing
+        | not (T.null o) = if o `Set.member` objectIds then Just (ToObject o) else Nothing
+        | otherwise = Just ToPool
+      inputChecks =
+        [ Check ("Eingabe " <> acc) Nothing (Just a) Failure ("Vertrag " <> c <> " ist kein Mieter der Einheit im Zeitraum" <> textSuffix o)
+        | (acc, c, o, a) <- inputs
+        , not (T.null c)
+        , not (c `Set.member` tenantSet)
+        ]
   -- Vorauszahlungen der Mieter im Zeitraum (anteilig)
   postings <- concatMap (maybe [] pure . posted) <$> readAll sys "ContractPosting" byCC
-  let advances =
+  let advancesOf types =
         Map.fromListWith (+)
           [ (pContract x, prorate (pAmount x) (pFrom x, pTo x) iv)
           | x <- postings
           , pContract x `Set.member` tenantSet
-          , pType x `elem` advanceTypes
+          , pType x `elem` types
           , Just iv <- [overlap period (pFrom x, pTo x)]
           ]
+      advances = advancesOf advanceTypes
+      ruleValues =
+        Map.fromList
+          [ (ruNo r, vals)
+          | r <- rules
+          , ruKind r == "ADVANCE"
+          , let vals
+                  | ruSourceType r == "INPUT" = Map.fromListWith (+) [(c, a) | (acc, c, _, a) <- inputs, acc == ruSourceValue r, not (T.null c)]
+                  | otherwise = advancesOf (codes (ruSourceValue r))
+          ]
+      accountDefs = Map.fromList [(text "code" a, AccountDef (text "code" a) (text "name" a) (fromMaybe "CONTRACT" (textMaybe "binding" a))) | a <- objects "accounts" p]
       def = Def unit scale (fromMaybe "TENANTS_OR_OWNER" (textMaybe "rounding_rule" defRec)) from to
       res =
         computeOpCost
@@ -275,12 +312,14 @@ computeOpCostRun cache call p = do
             , opMeasurements = measurements
             , opOccupancy = occupancy
             , opPersons = persons
-            , opSources = ledgerSources <> invoiceSources <> settlementSources
+            , opSources = ledgerSources <> invoiceSources <> settlementSources <> inputSources
             , opAdvances = advances
             , opCoverage = coverage
             , opCategories = Map.fromList [(text "code" c, text "name" c) | c <- objects "categories" p]
+            , opAccounts = accountDefs
+            , opRuleValues = ruleValues
             }
-      checks = orChecks res
+      checks = orChecks res <> inputChecks
       count l = length [() | c <- checks, chLevel c == l]
       checkSummary = tshow (count Ok) <> " ok, " <> tshow (count Deviation) <> " Abweichungen, " <> tshow (count Failure) <> " Fehler"
       summaryText =
@@ -310,8 +349,21 @@ computeOpCostRun cache call p = do
                  [ "contract_id" .= trContract t, "partner_id" .= trPartner t, "rent_object_id" .= trObject t, "usage_from" .= iso8601Show (trFrom t)
                  , "usage_to" .= iso8601Show (trTo t), "costs" .= trCosts t, "advances" .= trAdvances t
                  , "lines" .= T.intercalate "; " [k <> " " <> formatAmount 2 v | (k, v) <- trLines t]
+                 , "post_lines" .= [object ["rule" .= plRule l, "cost" .= plCost l, "advance" .= plAdvance l] | l <- trPost t]
                  ]
              | t <- orTenants res
+             ]
+      , "results"
+          .= [ object
+                 [ "contract_id" .= rlContract l, "rent_object_id" .= rlObject l, "account" .= rlAccount l, "level" .= rlLevel l
+                 , "amount" .= rlAmount l, "formula" .= rlFormula l
+                 ]
+             | t <- orTenants res
+             , l <- trResults t
+             ]
+      , "occupancy"
+          .= [ object ["contract_id" .= ocContract o, "partner_id" .= ocPartner o, "rent_object_id" .= ocObject o, "from" .= iso8601Show (ocFrom o), "to" .= iso8601Show (ocTo o)]
+             | o <- occupancy
              ]
       , "table"
           .= object
@@ -373,6 +425,7 @@ rule r = do
       , ruKey = text "allocation_key" r
       , ruTimeSplit = not (bool "vacancy_to_tenants" r)
       , ruAssignment = fromMaybe (if text "source_type" r == "LEDGER" then "POSTING_DATE" else "SERVICE_PERIOD") (textMaybe "assignment" r)
+      , ruInputs = codes (text "source_value" r)
       }
 
 allocKey :: Record -> AllocKey
@@ -383,6 +436,10 @@ person r = do
   from <- day "valid_from" r
   n <- int "persons" r
   pure (PersonSlice (text "contract_id" r) n from (fromMaybe openEnd (day "valid_to" r)))
+
+-- | Codes mit Komma ("A,B" → ["A", "B"]).
+codes :: Text -> [Text]
+codes t = [T.strip x | x <- T.splitOn "," t, not (T.null (T.strip x))]
 
 levelText :: Level -> Text
 levelText = \case
