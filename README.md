@@ -20,8 +20,8 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL; Einzelpreis je Einheit, nachgelagerte Konditionen (Steuer, Prozent; Zuschlag oder Anteil), Rundungsregeln, Tilgungsplan bis Stichtag, Positionen (derselbe Gegenstand mehrfach), je Einheit ohne Objekt = Bemessung des Hauptobjekts, keine Sollstellung bei Abrechnungsweg Eingangsrechnung | 0.17.0 |
-| `profit-loss` | `ProfitLoss` | GuV-Rechnung je Buchungskreis, Mietobjekt und Zeitraum aus den Einzelposten des Hauptbuchs – Bildschirm und CSV, nichts wird gespeichert | 0.1.0 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL; Einzelpreis je Einheit, nachgelagerte Konditionen (Steuer, Prozent; Zuschlag oder Anteil), Rundungsregeln, Tilgungsplan bis Stichtag, Positionen (derselbe Gegenstand mehrfach), je Einheit ohne Objekt = Bemessung des Hauptobjekts, keine Sollstellung bei Abrechnungsweg Eingangsrechnung, Gebäude des Vertragsobjekts auf Erlös- und Aufwandszeilen (Einstellung object_fields) | 0.18.0 |
+| `profit-loss` | `ProfitLoss`, `TrialBalance`, `AccountSheet`, `LedgerReport` | Auswertungen des Hauptbuchs: GuV je Buchungskreis, Gebäude, Wirtschaftseinheit oder Mietobjekt (wahlweise Spalte je Gebäude), Summen- und Saldenliste, Kontoblatt mit laufendem Saldo, Vertrags- und Partnerkonto sowie Kontostand für die Aktionen am Vertrag und Geschäftspartner – Bildschirm und CSV, nichts wird gespeichert | 0.2.0 |
 
 ## Bauen, testen, starten
 
@@ -288,7 +288,16 @@ steht in `configs/70-profit-loss.yaml` (`settings.sections`).
 |---|---|
 | `ProfitLoss.Report` | Einzelposten → Bereiche, Summen, Ergebnis, Tabelle, CSV, Beträge deutsch (rein) |
 | `ProfitLoss.Meta` | Metamodell (Catalog.Describe): Modul, Object, Maske, Übersetzungen |
-| `ProfitLoss.Api` | Object `ProfitLoss` (compute, formState), Einstellungen, Lesen aus dem Hauptbuch |
+| `ProfitLoss.Objects` | Gebäude eines Postens: Kontierungsspalte → Mietobjekt → Vertragsobjekt am Buchungsdatum (rein) |
+| `ProfitLoss.Ledger` | Saldenliste, Kontoblatt, Stand je Vertrag (rein) |
+| `ProfitLoss.Api` | Objects `ProfitLoss`, `TrialBalance`, `AccountSheet` (compute, formState), `LedgerReport` (ohne Maske), Einstellungen, Lesen aus dem Hauptbuch |
+
+`LedgerReport` (seit 0.2.0) rufen andere Module auf: `contractAccount` (Aktion
+„Vertragskonto …“ am Vertrag: Partnerposten der Belege zum Vertrag und der
+Bankbelege mit diesem Vertrag), `partnerAccount` („Partnerkonto …“ am
+Geschäftspartner, je Vertrag der Stand) und `accountBalance` („Darlehensstand …“:
+Saldo des Darlehenskontos am Stichtag). Gezählt werden alle Geschäftsjahre bis
+zum Stichtag – das Hauptbuch trägt keine Salden vor, Anfangsbestände sind gebucht.
 
 Tests (`cabal test profit-loss:test:spec`): Zeitraum, Bilanz- und unbekannte Konten, Storno
 (Konto ohne Bewegung entfällt), Vorzeichen je Bereich, Ergebnis, Tabelle, Beträge, CSV-Maskierung,

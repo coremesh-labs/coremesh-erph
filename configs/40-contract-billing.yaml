@@ -14,10 +14,17 @@ plugins:
   # über die Vorerfassung des Hauptbuchs (ledger). Läufe, Sollstellungen und
   # Oberfläche hält das Vertragsmodul.
   contract-billing:
-    version: 0.17.0
+    version: 0.18.0
     # Systemanfragen für die Kopie der Stammdaten (unabhängig vom buchenden Benutzer).
     ingress: true
     settings:
       cache_ttl: 1h                  # Sicherheitsnetz: Ausschnitte spätestens dann neu laden
+      # Kontierung des Vertragsobjekts auf den Erlös- und Aufwandszeilen: Objektart →
+      # Spalte der Einzelposten (wie die Objektkontierung der Eingangsrechnungen).
+      # Ein Mietobjekt bucht sein Gebäude in die Spalte von Building – so sammelt
+      # die GuV je Gebäude Mieten, Kosten und Zinsen.
+      object_fields:
+        Building: dimension_custom_1
+        BusinessEntity: dimension_custom_2
     databases:
       main: { access: write }        # nur für Transaktionen (inTx); das Plugin hat keine Tabellen

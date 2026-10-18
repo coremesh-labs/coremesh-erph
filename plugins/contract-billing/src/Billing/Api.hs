@@ -21,6 +21,7 @@ module Billing.Api
 
 import Control.Monad (forM_)
 import Data.Aeson (Value (..), object, (.=))
+import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -39,7 +40,7 @@ callbackObject = "ContractBillingCache"
 
 billingPlugin :: Cache -> Plugin
 billingPlugin cache =
-  (defaultPlugin "contract-billing" "0.17.0")
+  (defaultPlugin "contract-billing" "0.18.0")
     { pluginDescription = "Vertragsbuchung: Sollstellung der Verträge über die Vorerfassung des Hauptbuchs"
     , pluginCapabilities =
         [ Capability "ContractBilling" ["run", "loanSchedule", "depreciationSchedule", "checkSettlement", "postSettlement", "computeOpCost", "refresh", "cache"] []
@@ -48,6 +49,9 @@ billingPlugin cache =
         ]
     , pluginConfigure = \call settings -> do
         forM_ (KM.lookup "cache_ttl" settings >>= duration) (setTtl cache)
+        setObjectFields cache $ case KM.lookup "object_fields" settings of
+          Just (Object o) | fs@(_ : _) <- [(K.toText k, T.strip v) | (k, String v) <- KM.toList o, not (T.null (T.strip v))] -> fs
+          _ -> defaultObjectFields
         forM_ watched $ \o -> subscribe call o "*" "*" callbackObject
     , pluginHandle = handler cache
     }

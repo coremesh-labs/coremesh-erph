@@ -1,11 +1,16 @@
 plugins:
-  # GuV-Rechnung: Gewinn und Verlust je Buchungskreis, Mietobjekt und Zeitraum aus
-  # den Einzelposten des Hauptbuchs (ledger). Liest mit den Rechten des Benutzers,
-  # speichert nichts; Ergebnis auf dem Bildschirm und als CSV.
+  # Auswertungen des Hauptbuchs (ledger): GuV je Buchungskreis, Gebäude,
+  # Wirtschaftseinheit oder Mietobjekt und Zeitraum, Summen- und Saldenliste,
+  # Kontoblatt. Liest mit den Rechten des Benutzers, speichert nichts; Ergebnis
+  # auf dem Bildschirm und als CSV.
   profit-loss:
-    version: 0.1.0
+    version: 0.2.0
     settings:
       ledger: 0L                     # Ledger der Einzelposten (führendes Ledger)
+      # Kontierungsspalte der Einzelposten mit dem Gebäude (wie die Objektkontierung
+      # der Eingangsrechnungen). Ohne Eintrag dort gilt das Gebäude des Mietobjekts
+      # bzw. des Vertragsobjekts.
+      building_field: dimension_custom_1
       # Bereiche der GuV: Kontotypen des Kontenplans (GLAccount.account_type);
       # INCOME zeigt Haben positiv (Erträge), EXPENSE Soll positiv (Aufwand).
       # Ergebnis = Erträge − Aufwendungen. Bestandskonten (BALANCE_SHEET) gehören nicht hinein.

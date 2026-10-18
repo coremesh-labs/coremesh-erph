@@ -129,6 +129,8 @@ runBilling cache call RunRequest {..} = do
   taxes <- if needTaxes then concatMap (maybe [] pure . taxCode) <$> get TaxCodes else pure []
   roundings <- concatMap (maybe [] pure . rounding) <$> get RoundingRules
   decimals <- mapM (\cur -> (cur,) <$> currencyDecimals call cur) (nub (map cCurrency contracts))
+  rentBuildings <- Map.fromList . concatMap (maybe [] pure . rentBuilding) <$> get RentObjects
+  fields <- objectFields cache
   let input =
         Input
           { inTypes = Map.fromList [(ctCode t, t) | t <- types]
@@ -151,6 +153,8 @@ runBilling cache call RunRequest {..} = do
           , inRoundings = Map.fromList [(rCode r, r) | r <- roundings]
           , inCompanyRounding = companyRounding
           , inDecimals = Map.fromList decimals
+          , inRentBuildings = rentBuildings
+          , inObjectFields = fields
           }
       (docs, planMsgs) = plan rrTo input
       msgs0 = badConditions <> badLoans <> badDeps <> planMsgs

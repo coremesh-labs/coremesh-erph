@@ -48,6 +48,7 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Containers.ListUtils (nubOrd)
 import Data.Maybe (isJust, isNothing, listToMaybe)
+import Data.Ord (Down (..))
 import Data.Scientific (Scientific)
 import Data.Set qualified as Set
 import Data.Text (Text)
@@ -84,6 +85,8 @@ data Input = Input
   , inRoundings :: Map Text Rounding -- ^ Rundungsregeln (Hauptbuch)
   , inCompanyRounding :: Maybe Text -- ^ Rundungsregel des Buchungskreises
   , inDecimals :: Map Text Int -- ^ Nachkommastellen je Währung
+  , inRentBuildings :: Map Text Text -- ^ seit 0.18.0: Mietobjekt → Gebäude
+  , inObjectFields :: [(Text, Text)] -- ^ seit 0.18.0: Objektart → Kontierungsspalte (Building, BusinessEntity)
   -- ^ Buchungskreis „rückwirkend buchen ab“ (LedgerCompanyConfig.backdate_from): Nachberechnungen
   -- buchen dann zu ihrer Fälligkeit, frühestens zu diesem Tag, höchstens zum Tag des Laufs
   }
@@ -441,11 +444,20 @@ plan until Input {..} = (concat docs, concat msgs)
             Correction -> "Nachberechnung " <> kType k <> " " <> periodText (dueFrom due) (dueTo due)
           common = [("rent_contract_id", cId c)] <> maybe [] (\o -> [("rent_object_id", o)]) (eRentObject e)
           withFields acc fs = Line acc "" (abs amount) txt (allowed acc fs)
-          -- Gebäude bzw. Wirtschaftseinheit als Hauptobjekt (Abschreibung eines ganzen Hauses)
+          -- Objekt des Vertrags in die Kontierungsspalten der Einstellung object_fields: das
+          -- Hauptobjekt am Fälligkeitstag (sonst das zuletzt gültige Hauptobjekt); ein
+          -- Mietobjekt bucht sein Gebäude in die Spalte von Building (seit 0.18.0) – so
+          -- sammelt die GuV je Gebäude Mieten, Kosten und Zinsen.
           objectDims =
-            [ (field, oId o)
-            | o <- take 1 [o | o <- Map.findWithDefault [] (cId c) objectsOf, oMain o]
-            , Just field <- [lookup (oType o) [("Building", "dimension_custom_1"), ("BusinessEntity", "dimension_custom_2")]]
+            [ (field, v)
+            | o <- take 1 (mainAt c (dueDate due))
+            , (field, v) <-
+                [(f, oId o) | Just f <- [lookup (oType o) inObjectFields]]
+                  <> [ (f, b)
+                     | oType o == "RentObject"
+                     , Just b <- [Map.lookup (oId o) inRentBuildings]
+                     , Just f <- [lookup "Building" inObjectFields]
+                     ]
             ]
        in case eCounter e of
             Just counter ->
@@ -463,6 +475,11 @@ plan until Input {..} = (concat docs, concat msgs)
                   [ (withFields recon (common <> [("sd_customer_id", partner)])) {lSide = debit}
                   , (withFields (eAccount e) (common <> objectDims)) {lSide = credit}
                   ]
+
+    -- Hauptobjekte des Vertrags: gültig am Tag zuerst, sonst das zuletzt begonnene.
+    mainAt c d =
+      let mains = [o | o <- Map.findWithDefault [] (cId c) objectsOf, oMain o]
+       in [o | o <- mains, oFrom o <= d, d <= oTo o] <> sortOn (Down . oFrom) mains
 
     -- Nur Kontierungen, die die Feldstatusgruppe des Kontos nicht ausblendet.
     allowed acc fs = case Map.lookup (shortNumber acc) inAccounts of
