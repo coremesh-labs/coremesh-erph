@@ -92,7 +92,54 @@ reports =
           ("Geschäftspartner (leer = alle)", "Business partner (empty = all)", "业务伙伴（空 = 全部）")
       ]
     )
+  , ( "PartnerBalance"
+    , "icon-users"
+    , ("Debitoren und Kreditoren", "Customers and suppliers", "客户与供应商")
+    , ("Partnerkonten anzeigen", "Show partner accounts", "显示伙伴账户")
+    , [ companyCode
+      , Field "partner_kind" "select" False Nothing
+          [ ("DEBITOR", ("Debitoren", "Customers", "客户"))
+          , ("CREDITOR", ("Kreditoren", "Suppliers", "供应商"))
+          ]
+          ("Partnerart (leer = beide)", "Partner type (empty = both)", "伙伴类型（空 = 两者）")
+      , Field "partner_id" "text" False (Just partnerLookup) []
+          ("Geschäftspartner (leer = alle, mit Summen)", "Business partner (empty = all, with totals)", "业务伙伴（空 = 全部，含合计）")
+      , Field "account_number" "text" False (Just reconLookup) []
+          ("Abstimmkonto (leer = alle)", "Reconciliation account (empty = all)", "统驭科目（空 = 全部）")
+      , periodFrom
+      , periodTo
+      , Field "only_open" "boolean" False Nothing [] ("Nur nicht ausgeglichene Partner", "Only partners with a balance", "仅显示未结平伙伴")
+      ]
+    )
   ]
+
+-- | Geschäftspartner nach der Partnerart der Maske (Lookup-Varianten): Debitoren
+-- bzw. Kreditoren (Rollenart des Partnermoduls), ohne Art alle.
+partnerLookup :: Value
+partnerLookup =
+  object
+    [ "object" .= ("BusinessPartner" :: Text)
+    , "value_field" .= ("id" :: Text)
+    , "label_fields" .= (["search_term", "name1"] :: [Text])
+    , "by" .= ("partner_kind" :: Text)
+    , "variants" .= object [K.fromText k .= object ["object" .= ("BusinessPartner" :: Text), "value_field" .= ("id" :: Text), "label_fields" .= (["search_term", "name1"] :: [Text]), "filters" .= object ["role_kind" .= ("=" <> k)]] | k <- ["DEBITOR", "CREDITOR"]]
+    ]
+
+-- | Abstimmkonten der Partnerart (Debitoren CUSTOMER, Kreditoren SUPPLIER).
+reconLookup :: Value
+reconLookup =
+  object
+    [ "object" .= ("GLAccountCompany" :: Text)
+    , "value_field" .= ("account_number" :: Text)
+    , "label_fields" .= (["account_name"] :: [Text])
+    , "filters" .= object ["company_code_id" .= ("company_code" :: Text)]
+    , "by" .= ("partner_kind" :: Text)
+    , "variants"
+        .= object
+          [ K.fromText k .= object ["object" .= ("GLAccountCompany" :: Text), "value_field" .= ("account_number" :: Text), "label_fields" .= (["account_name"] :: [Text]), "filters" .= object ["company_code_id" .= ("company_code" :: Text), "reconciliation_type" .= ("=" <> r)]]
+          | (k, r) <- [("DEBITOR", "CUSTOMER"), ("CREDITOR", "SUPPLIER")] :: [(Text, Text)]
+          ]
+    ]
 
 describe :: Value
 describe =
@@ -125,7 +172,7 @@ describe =
                , "title" .= ("GuV" :: Text)
                , "title_key" .= (moduleName <> ".module.title")
                , "icon" .= ("icon-chart" :: Text)
-               , "description" .= ("Auswertungen des Hauptbuchs: GuV je Gebäude, Saldenliste, Kontoblatt" :: Text)
+               , "description" .= ("Auswertungen des Hauptbuchs: GuV je Gebäude, Saldenliste, Kontoblatt, Debitoren und Kreditoren" :: Text)
                , "description_key" .= (moduleName <> ".module.description")
                , "objects"
                    .= [ object ["object" .= obj, "section" .= ("Auswertungen" :: Text), "section_key" .= (moduleName <> ".sections.auswertungen")]

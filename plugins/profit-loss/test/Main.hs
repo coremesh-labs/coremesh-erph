@@ -149,5 +149,20 @@ main = do
       cs = [pc "MV2" (d 2026 1 1) 500, pc "MV2" (d 2026 1 5) (-500), pc "" (d 2026 1 6) (-30), pc "MV1" (d 2026 1 1) 700, pc "MV1" (d 2026 9 1) 1]
   check "Stand je Vertrag" [ContractTotal "MV1" 700 0 700, ContractTotal "MV2" 500 500 0, ContractTotal "" 0 30 (-30)] (contractTotals (d 2026 6 30) cs)
 
+  -- Debitoren und Kreditoren: Saldo je Partner und Konto, Summen je Konto, Art und gesamt
+  let pp k acc bp dt amt = (k, (po acc dt "" amt) {poPartner = bp})
+      pr = partnerBalances (d 2026 2 1) (d 2026 12 31)
+        [ pp "D" "1200" "BP1" (d 2026 1 5) 1000
+        , pp "D" "1200" "BP1" (d 2026 2 5) (-1000)
+        , pp "D" "1200" "BP2" (d 2026 3 1) 500
+        , pp "K" "3300" "BP3" (d 2026 3 1) (-700)
+        ]
+  check "Partnersalden" [PartnerRow "D" "1200" "BP1" 1000 0 1000 0, PartnerRow "D" "1200" "BP2" 0 500 0 500, PartnerRow "K" "3300" "BP3" 0 0 700 (-700)] pr
+  let pl = partnerListRows 2 False (const "") (const "") pr
+  check "Summe Konto 1200" ["1200", "", "Summe Konto 1200 (2 Partner)", "", "10,00", "5,00", "10,00", "5,00", "Soll-Saldo"] (pl !! 2)
+  check "Summe Debitoren" ["", "", "Summe Debitoren (2 Partner)", "", "10,00", "5,00", "10,00", "5,00", "Soll-Saldo"] (pl !! 3)
+  check "Gesamtsumme" ["", "", "Gesamtsumme (3 Partner)", "", "10,00", "5,00", "17,00", "-2,00", "Haben-Saldo"] (last pl)
+  check "nur offene" 7 (length (partnerListRows 2 True (const "") (const "") pr))
+
   n <- readIORef failures
   if n > 0 then putStrLn (show n <> " Fehler") >> exitFailure else putStrLn "alle Tests bestanden"
