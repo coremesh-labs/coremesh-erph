@@ -82,6 +82,7 @@ data Def = Def
   , dfRounding :: Text -- ^ TENANTS_OR_OWNER | OWNER
   , dfFrom :: Day
   , dfTo :: Day
+  , dfCostsOnly :: Bool -- ^ Kostenaufstellung je Einheit (Art COSTS): sammeln ohne Verteilung, keine Mieter
   }
   deriving stock (Show)
 
@@ -369,6 +370,7 @@ computeOpCost inp@OpInput {..} =
     foreignCents = (sum [b | (F _, b) <- Map.toList (stBal final)] + balance R final) `div` scale
     labels = Map.union (Map.map adName opAccounts) (Map.map (\c -> Map.findWithDefault c c opCategories) (poolLabels rules))
     tenants =
+      if dfCostsOnly def then [] else
       [ TenantResult
           { trContract = c
           , trPartner = partner
@@ -433,7 +435,12 @@ computeOpCost inp@OpInput {..} =
       O _ _ -> True
       _ -> False
     distributed = sum (map trCosts tenants) + ownerCents + foreignCents
-    endChecks =
+    endChecks
+      | dfCostsOnly def =
+          [ Check "Kostenaufstellung" (Just sourcesCents) Nothing Info
+              "ohne Verteilung: die Kosten bleiben bei der Einheit (Summe der Quellen)"
+          ]
+      | otherwise =
       leftover
         <> [ Check "Summe" (Just sourcesCents) (Just distributed) (if sourcesCents == distributed then Ok else Deviation)
                "Summe der Quellen = Mieter + Eigentümer (Leerstand, Rundung) + übrige Eigentümer"
