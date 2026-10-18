@@ -84,14 +84,17 @@ runBilling cache call RunRequest {..} = do
   let get = slice cache sys rrCompany
       only :: (a -> Text) -> [a] -> [a]
       only f = maybe id (\c -> filter ((== c) . f)) rrContract
-  types <- map contractType <$> get Types
+  typeRecs <- get Types
+  kindRecs <- get ConditionKinds
+  let types = map contractType typeRecs
   allContracts <- only cId . concatMap (maybe [] pure . contract) <$> get Contracts
   contracts <- visibleContracts call allContracts
   let ids = Set.fromList (map cId contracts)
       mine :: (a -> Text) -> [a] -> [a]
       mine f = filter ((`Set.member` ids) . f)
-  -- Rechnungsvorlagen (is_template, z. B. am Rahmenvertrag) erzeugen keine Sollstellung.
-  condRecs <- filter (not . bool "is_template") <$> get Conditions
+  -- Rechnungsvorlagen (Abrechnungsweg Eingangsrechnung, z. B. Dienstleister, Rahmenvertrag)
+  -- erzeugen keine Sollstellung.
+  condRecs <- filter (not . isTemplate typeRecs kindRecs) <$> get Conditions
   let parsed = [(text "contract_id" r, condition r) | r <- condRecs]
       conditions = mine kContract [k | (_, Right k) <- parsed]
       badConditions = [(c, "Kondition nicht lesbar: " <> e) | (c, Left e) <- parsed, c `Set.member` ids]
@@ -482,7 +485,9 @@ loadSettlement cache call SettlementRequest {..} = do
   let get = slice cache sys srCompany
       flt = [("company_code", String srCompany), ("contract_id", String srContract)]
   contracts <- concatMap (maybe [] pure . contract) <$> get Contracts
-  types <- map contractType <$> get Types
+  typeRecs <- get Types
+  kindRecs <- get ConditionKinds
+  let types = map contractType typeRecs
   c <- case [x | x <- contracts, cId x == srContract] of
     x : _ -> pure x
     [] -> pluginError NotFound ("Vertrag " <> srContract <> " gibt es im Buchungskreis " <> srCompany <> " nicht")

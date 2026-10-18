@@ -16,6 +16,7 @@ module Billing.Data
   , PostingKind (..)
   , FieldStatus
   , contractType
+  , isTemplate
   , contract
   , condition
   , contractObject
@@ -247,6 +248,16 @@ contractType r =
     , ctCreditDocumentType = textMaybe "credit_document_type" r
     , ctAutoPost = bool "auto_post" r
     }
+
+-- | Rechnungsvorlage (seit 0.17.0 hier berechnet; die Rohdaten der Kondition tragen es
+-- nicht): Abrechnungsweg der Vertragsart INVOICE, oder BOTH und die Konditionsart ist
+-- eine Rechnungsposition (billing_form INVOICE). Keine Sollstellung.
+isTemplate :: [Record] -> [Record] -> Record -> Bool
+isTemplate types kinds r = bool "is_template" r || mode == "INVOICE" || (mode == "BOTH" && form == "INVOICE")
+  where
+    mode = maybe "" (text "billing_mode") (find' "code" (text "contract_type" r) types)
+    form = maybe "" (text "billing_form") (find' "code" (text "condition_kind" r) kinds)
+    find' k v = foldr (\x acc -> if text k x == v then Just x else acc) Nothing
 
 contract :: Record -> Maybe Contract
 contract r = do

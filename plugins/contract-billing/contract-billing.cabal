@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name:          contract-billing
-version:       0.16.0
+version:       0.17.0
 synopsis:      Vertragsbuchung: Sollstellung der Verträge im Hauptbuch
 description:
   CoreMesh-Plugin in Haskell. Bucht die fälligen Konditionen der Verträge
@@ -65,6 +65,7 @@ test-suite spec
   main-is:         Main.hs
   build-depends:
       base
+    , aeson
     , containers
     , contract-billing
     , text
