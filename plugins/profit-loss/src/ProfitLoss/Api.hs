@@ -6,7 +6,7 @@
 -- | TrialBalance.compute | company_code, fiscal_year, period_from, period_to, building_id?, entity_id?, account_from?, account_to?, only_open? | message, table, download |
 -- | AccountSheet.compute | company_code, fiscal_year, account_number, period_from, period_to, building_id?, entity_id?, contract_id?, partner_id? | message, table, download |
 -- | *.formState | FormStateRequest | Vorbelegung (laufendes Jahr bis heute) |
--- | PartnerBalance.compute | company_code, period_from, period_to, partner_kind? (DEBITOR, CREDITOR), partner_id?, account_number?, only_open? | message, table, download |
+-- | PartnerAccounts.compute | company_code, period_from, period_to, partner_kind? (DEBITOR, CREDITOR), partner_id?, account_number?, only_open? | message, table, download |
 -- | LedgerReport.contractAccount | company_code, contract_id, period_from?, period_to? | message, table, download, balance |
 -- | LedgerReport.partnerAccount | partner_id, company_code?, period_from?, period_to? | message, table, download, balance |
 -- | LedgerReport.accountBalance | company_code, account_number, date?, contract_id? | balance, currency, decimals, items |
@@ -61,7 +61,7 @@ profitLossPlugin ref =
         [ Capability "ProfitLoss" ["compute", "formState"] [] "GuV rechnen: Bildschirm und CSV, nichts wird gespeichert"
         , Capability "TrialBalance" ["compute", "formState"] [] "Summen- und Saldenliste: Bildschirm und CSV"
         , Capability "AccountSheet" ["compute", "formState"] [] "Kontoblatt mit laufendem Saldo: Bildschirm und CSV"
-        , Capability "PartnerBalance" ["compute", "formState"] [] "Debitoren und Kreditoren: Salden je Partner und Abstimmkonto mit Summen, Partnerkonto"
+        , Capability "PartnerAccounts" ["compute", "formState"] [] "Debitoren und Kreditoren: Salden je Partner und Abstimmkonto mit Summen, Partnerkonto"
         , Capability "LedgerReport" ["contractAccount", "partnerAccount", "accountBalance"] [] "Vertrags- und Partnerkonto, Kontostand – für Vertrag und Geschäftspartner"
         ]
     , pluginDescribe = Just describe
@@ -127,7 +127,7 @@ day k r = iso8601ParseM (T.unpack (T.take 10 (text k r)))
 
 handler :: Settings -> Call -> Request -> IO Response
 handler settings call req = case (reqObject req, reqAction req) of
-  (o, "formState") | o `elem` ["ProfitLoss", "TrialBalance", "AccountSheet", "PartnerBalance"] -> do
+  (o, "formState") | o `elem` ["ProfitLoss", "TrialBalance", "AccountSheet", "PartnerAccounts"] -> do
     today <- utctDay <$> getCurrentTime
     let (y, _, _) = toGregorian today
         values = case KM.lookup "values" p of
@@ -135,7 +135,7 @@ handler settings call req = case (reqObject req, reqAction req) of
           _ -> mempty
         preset k v = [K.fromText k .= object ["value" .= v] | T.null (text k values)]
         -- Vorbelegung als Text (FieldState.value ist eine Zeichenkette)
-        year = if o `elem` ["ProfitLoss", "PartnerBalance"] then [] else preset "fiscal_year" (T.pack (show y))
+        year = if o `elem` ["ProfitLoss", "PartnerAccounts"] then [] else preset "fiscal_year" (T.pack (show y))
     pure . response $
       object
         [ "fields" .= object (year <> preset "period_from" (iso8601Show (fromGregorian y 1 1)) <> preset "period_to" (iso8601Show today))
@@ -156,7 +156,7 @@ handler settings call req = case (reqObject req, reqAction req) of
     fy <- year
     (from, to) <- period
     response <$> sheet settings call cc fy acc p from to
-  ("PartnerBalance", "compute") -> do
+  ("PartnerAccounts", "compute") -> do
     cc <- required "company_code" "Buchungskreis"
     (from, to) <- period
     response <$> partnerList settings call cc p from to
@@ -196,7 +196,7 @@ handler settings call req = case (reqObject req, reqAction req) of
 formMessage :: Text -> Text
 formMessage = \case
   "TrialBalance" -> "Salden aller Konten im Geschäftsjahr: Vortrag vor „von“, Soll und Haben im Zeitraum. Ausgeglichen = Saldo 0."
-  "PartnerBalance" -> "Debitoren und Kreditoren je Abstimmkonto mit Summen. Mit einem Geschäftspartner: sein Partnerkonto mit laufendem Saldo und Stand je Vertrag."
+  "PartnerAccounts" -> "Debitoren und Kreditoren je Abstimmkonto mit Summen. Mit einem Geschäftspartner: sein Partnerkonto mit laufendem Saldo und Stand je Vertrag."
   "AccountSheet" -> "Alle Buchungen eines Kontos mit laufendem Saldo – z. B. Darlehenskonto, Kautionen, Mieter- oder Lieferantenkonto."
   _ -> "Gewinn und Verlust aus den gebuchten Einzelposten (Buchungsdatum im Zeitraum), wahlweise für ein Gebäude oder mit einer Spalte je Gebäude."
 
