@@ -588,6 +588,12 @@ opCostTests check = do
   check "NK: Rundung 1 Cent" 1 (orRounding one)
   check "NK: Rest an den Eigentümer" (19835 + 1) (orOwnerTotal one)
   check "NK: MV2 zeitanteilig" [20164] [trCosts t | t <- orTenants one, trContract t == "MV2"]
+  -- Rechenweg je Mieterkonto: Gesamtkosten, Schlüssel 60/100, Tage 365/365, Faktor 0,6
+  check "NK: Detail MV1"
+    [Detail "WASSER" "W1" 100000 "Wohnfläche" (Just 60) (Just 100) (Just 365) (Just 365) "Tage" 0.6 60000]
+    [d | t <- orTenants one, trContract t == "MV1", d <- trDetails t, dtAccount d == "WASSER"]
+  check "NK: Detail MV2 zeitanteilig" [(Just 184, Just 365)] [(dtUse d, dtUseTotal d) | t <- orTenants one, trContract t == "MV2", d <- trDetails t, dtAccount d == "WASSER"]
+  check "NK: Topfsumme" (Map.fromList [("WASSER", 100000)]) (orPoolTotals one)
   let open' = computeOpCost inp {opRules = take 3 rules}
   check "NK: Töpfe offen" ["Offen O:W1:GRST", "Offen S:WASSER"] (sort [chName c | c <- orChecks open', chLevel c == Failure])
   check "NK: Summe weicht ab" [Deviation] [chLevel c | c <- orChecks open', chName c == "Summe"]

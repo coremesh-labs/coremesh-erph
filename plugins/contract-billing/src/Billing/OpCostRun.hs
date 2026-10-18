@@ -358,6 +358,15 @@ computeOpCostRun cache call p = do
                  , "usage_to" .= iso8601Show (trTo t), "costs" .= trCosts t, "advances" .= trAdvances t
                  , "lines" .= T.intercalate "; " [k <> " " <> formatAmount 2 v | (k, v) <- trLines t]
                  , "post_lines" .= [object ["rule" .= plRule l, "cost" .= plCost l, "advance" .= plAdvance l] | l <- trPost t]
+                 , "details"
+                     .= [ object
+                            [ "account" .= dtAccount d, "rent_object_id" .= dtObject d, "total" .= dtTotal d, "key" .= dtKey d
+                            , "weight" .= (ratio <$> dtWeight d), "weight_total" .= (ratio <$> dtWeightTotal d)
+                            , "use" .= (ratio <$> dtUse d), "use_total" .= (ratio <$> dtUseTotal d), "use_key" .= dtUseKey d
+                            , "factor" .= ratio (dtFactor d), "amount" .= dtAmount d
+                            ]
+                        | d <- trDetails t
+                        ]
                  ]
              | t <- orTenants res
              ]
@@ -369,6 +378,7 @@ computeOpCostRun cache call p = do
              | t <- orTenants res
              , l <- trResults t
              ]
+      , "pool_totals" .= [object ["account" .= k, "amount" .= v] | (k, v) <- Map.toList (orPoolTotals res)]
       , "occupancy"
           .= [ object ["contract_id" .= ocContract o, "partner_id" .= ocPartner o, "rent_object_id" .= ocObject o, "from" .= iso8601Show (ocFrom o), "to" .= iso8601Show (ocTo o)]
              | o <- occupancy
@@ -385,6 +395,8 @@ computeOpCostRun cache call p = do
             ]
       ]
   where
+    ratio :: Rational -> Double
+    ratio = fromRational
     req k r label = maybe (pluginError InvalidArgument (label <> " ist Pflicht")) pure (textMaybe k r)
     dateReq k = do
       t <- req k p k
