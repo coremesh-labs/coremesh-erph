@@ -407,6 +407,8 @@ depTerms r = do
       , dpAssetAccount = text "asset_account" r
       , dpExpenseAccount = text "expense_account" r
       , dpType = let t = text "condition_type" r in if T.null t then "AF" else t
+      , dpAnnual = int "annual_amount" r
+      , dpInstallments = maybe 1 fromIntegral (int "installments" r)
       }
 
 loanPayment :: Record -> Maybe LoanPayment

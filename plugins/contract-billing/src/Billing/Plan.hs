@@ -270,14 +270,24 @@ plan until Input {..} = (concat docs, concat msgs)
               , let t = termsAt (rDue row)
               ]
 
-    -- Abschreibung: je Jahr eine Fälligkeit zum Jahres- bzw. Vertragsende,
-    -- Aufwandskonto an Anlagekonto (Vermerk unter der Konditionsart der Kondition).
+    -- Abschreibung: je Rate (Raten im Jahr) eine Fälligkeit zum Perioden- bzw.
+    -- Vertragsende, Aufwandskonto an Anlagekonto (Vermerk unter der
+    -- Konditionsart der Kondition); erst ab „Sollstellung ab“ (davor im Altsystem).
     depEntries c horizon =
       [ Entry k due (rentObject c k (drDue row)) (dpExpenseAccount t) Original (Just (dpAssetAccount t))
-      | row <- depSchedule (Map.findWithDefault [] (cId c) depsOf) (cTo c) horizon
+      | let (hy, _, _) = toGregorian horizon -- Jahreszeile rechnen, Raten bis horizon
+      , row <- concatMap depInstallments (depSchedule (Map.findWithDefault [] (cId c) depsOf) (cTo c) (fromGregorian hy 12 31))
+      , drDue row <= horizon
       , drAmount row /= 0
+      , drDue row >= maybe (cFrom c) id (cBillingStart c)
       , let t = drTerms row
-            k = (loanCondition c (dpType t) (dpExpenseAccount t) Yearly row') {kFrom = drFrom row, kTo = drTo row}
+            freq = case dpInstallments t of
+              12 -> Monthly
+              6 -> Bimonthly
+              4 -> Quarterly
+              2 -> HalfYearly
+              _ -> Yearly
+            k = (loanCondition c (dpType t) (dpExpenseAccount t) freq row') {kFrom = drFrom row, kTo = drTo row}
             row' = Row Regular (drFrom row) (drTo row) (drDue row) 0 0 0
             due = Due (drFrom row) (drTo row) (drFrom row) (drTo row) (drDue row) (drAmount row)
       ]

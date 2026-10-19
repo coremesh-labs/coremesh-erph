@@ -448,7 +448,7 @@ loanTests check = do
 depreciationTests :: (forall a. (Eq a, Show a) => String -> a -> a -> IO ()) -> IO ()
 depreciationTests check = do
   let d = fromGregorian
-      terms = DepTerms "KV-1" (d 2025 7 15) openEnd 30000000 2 Linear (d 2025 7 15) Nothing "0230" "6221" "AF"
+      terms = DepTerms "KV-1" (d 2025 7 15) openEnd 30000000 2 Linear (d 2025 7 15) Nothing "0230" "6221" "AF" Nothing 1
       rows = depSchedule [terms] openEnd (d 2027 12 31)
   check "linear: 2025 sechs Monate, dann volle Jahre" [(d 2025 12 31, 6, 300000), (d 2026 12 31, 12, 600000), (d 2027 12 31, 12, 600000)]
     [(drDue r, drMonths r, drAmount r) | r <- rows]
@@ -462,6 +462,16 @@ depreciationTests check = do
   let degr = terms {dpMethod = Degressive, dpRate = 5, dpStart = d 2026 1 1, dpFrom = d 2026 1 1}
       rows3 = depSchedule [degr] (d 2027 6 30) (d 2030 12 31)
   check "degressiv und Verkauf" [(d 2026 12 31, 1500000), (d 2027 6 30, 712500)] [(drDue r, drAmount r) | r <- rows3]
+  -- fester Jahresbetrag 529,00 in 12 Raten: 11 × 44,08, Rest 44,12 im Dezember
+  let monthly = terms {dpStart = d 2013 1 1, dpFrom = d 2013 1 1, dpBase = 2642000, dpAnnual = Just 52900, dpInstallments = 12}
+      inst = concatMap depInstallments (depSchedule [monthly] openEnd (d 2013 12 31))
+  check "Raten: zwölf" 12 (length inst)
+  check "Raten: Rest in der letzten" (replicate 11 4408 <> [4412]) (map drAmount inst)
+  check "Raten: Fälligkeit Monatsende" (d 2013 2 28, d 2013 12 31) (drDue (inst !! 1), drDue (last inst))
+  check "Raten: Buchwert" (2642000 - 52900) (drBookAfter (last inst))
+  -- Beginn im Juli, vierteljährlich: Q3 und Q4 je 3 Monate
+  let q = concatMap depInstallments (depSchedule [terms {dpInstallments = 4}] openEnd (d 2025 12 31))
+  check "Raten: Quartale ab Juli" [(d 2025 9 30, 150000), (d 2025 12 31, 150000)] [(drDue r, drAmount r) | r <- q]
   -- Plan: Kaufvertrag ohne Partnerkonto, Beleg SA, Aufwand an Anlage, Gebäude als Kontierung
   let kv = Contract "1000" "KV-1" "KV" "ACTIVE" "SELLER" "EUR" "" (d 2025 7 15) openEnd Nothing
       input =
@@ -477,6 +487,12 @@ depreciationTests check = do
   check "Abschreibung: Aufwand an Anlage, Gebäude"
     [("6221", "S", 600000, Just "HAUS1"), ("0230", "H", 600000, Just "HAUS1")]
     [(lAccount l, lSide l, lAmount l, lookup "dimension_custom_1" (lFields l)) | x <- docs, dDate x == d 2026 12 31, l <- dLines x]
+  -- Übernahme: Beginn 2013, Sollstellung ab 2026, monatlich – gebucht erst ab Januar 2026
+  let old = kv {cFrom = d 2013 1 1, cBillingStart = Just (d 2026 1 1)}
+      (docs2, msgs2) = plan (d 2026 3 31) input {inContracts = [old], inDepreciations = [monthly {dpContract = "KV-1"}]}
+  check "Übernahme: keine Meldungen" [] msgs2
+  check "Übernahme: Januar bis März 2026" [d 2026 1 31, d 2026 2 28, d 2026 3 31] (map dDate docs2)
+  check "Übernahme: Monatsrate" [4408, 4408, 4408] [lAmount l | x <- docs2, l <- dLines x, lSide l == "S"]
 
 settlementTests :: (forall a. (Eq a, Show a) => String -> a -> a -> IO ()) -> IO ()
 settlementTests check = do
