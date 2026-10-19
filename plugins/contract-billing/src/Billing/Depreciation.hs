@@ -6,7 +6,8 @@
 -- Abschreibungsbeginns, im letzten bis zum Monat des Vertragsendes (Verkauf).
 -- Linear: Bemessungsgrundlage × Satz; degressiv: Buchwert am Jahresanfang ×
 -- Satz (oder fester Jahresbetrag, z. B. laut Steuerbescheid) – jeweils × Monate
--- / 12, höchstens bis zum Buchwert 0. „Raten im Jahr“ (depInstallments) teilt
+-- / 12, gerundet nach der Rundungsregel (z. B. auf volle Euro aufrunden),
+-- höchstens bis zum Buchwert 0. „Raten im Jahr“ (depInstallments) teilt
 -- den Jahresbetrag nach Monaten auf die Kalenderperioden (Monat, Quartal …);
 -- der Rundungsrest kommt in die letzte Rate des Jahres. Zeitscheiben:
 -- Eine höhere Bemessungsgrundlage (nachträgliche Herstellungskosten) erhöht
@@ -23,6 +24,8 @@ where
 import Data.List (sortOn)
 import Data.Text (Text)
 import Data.Time.Calendar (Day, addDays, addGregorianMonthsClip, fromGregorian, toGregorian)
+
+import Billing.Schedule (roundBy)
 
 data DepMethod = Linear | Degressive
   deriving stock (Show, Eq)
@@ -41,6 +44,8 @@ data DepTerms = DepTerms
   , dpType :: Text -- ^ Konditionsart des Vermerks (z. B. AF)
   , dpAnnual :: Maybe Integer -- ^ fester Jahresbetrag (linear), sonst Bemessungsgrundlage × Satz
   , dpInstallments :: Int -- ^ Raten im Jahr (Teiler von 12)
+  , dpRoundingCode :: Maybe Text -- ^ Rundungsregel des Jahresbetrags (leer = Konditionsart)
+  , dpRound :: Maybe (Text, Rational) -- ^ aufgelöst (Billing.Pricing.depRounding): Art, Schrittweite in der kleinsten Einheit
   }
   deriving stock (Show)
 
@@ -77,12 +82,19 @@ depSchedule terms end horizon = case sortOn dpFrom terms of
               raw = case dpMethod t of
                 Linear -> maybe (fromIntegral (dpBase t) * dpRate t / 100) fromIntegral (dpAnnual t) * fromIntegral months / 12
                 Degressive -> fromIntegral before * dpRate t / 100 * fromIntegral months / 12
-              amount = min before (round (raw :: Rational))
+              amount = min before (roundYear t raw)
               row = DepRow yFrom yTo yTo months addition amount before (before - amount) t
            in if yTo < yFrom || yTo > horizon
                 then []
                 else row : (if before - amount <= 0 then [] else go (before - amount) (dpBase t) (y + 1))
      in go opening (dpBase first) y0
+
+-- | Jahresbetrag (kleinste Einheit) nach der Rundungsregel, z. B. auf volle Euro
+-- aufrunden; ohne Regel auf die kleinste Einheit.
+roundYear :: DepTerms -> Rational -> Integer
+roundYear t raw = case dpRound t of
+  Just (mode, step) | step > 0 -> roundBy "HALF_UP" (fromInteger (roundBy mode (raw / step)) * step)
+  _ -> round raw
 
 -- | Raten einer Jahreszeile: je Kalenderperiode (12 / Raten Monate, ab Januar)
 -- im Zeitraum der Zeile ein Anteil nach Monaten, gerundet; der Rundungsrest

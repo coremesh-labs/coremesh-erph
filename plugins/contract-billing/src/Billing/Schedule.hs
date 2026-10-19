@@ -23,8 +23,11 @@ module Billing.Schedule
   , duesFrom
   , prorate
   , roundDiv
+  , roundBy
   ) where
 
+import Data.Ratio (denominator, numerator, (%))
+import Data.Text (Text)
 import Data.Time.Calendar
 
 data Frequency = Monthly | Bimonthly | Quarterly | HalfYearly | Yearly | Once
@@ -136,3 +139,17 @@ dueOnce n dueOn amountAt from to horizon
     total = amountAt from
     rate = total `quot` toInteger k
     amounts = (total - rate * toInteger (k - 1)) : replicate (k - 1) rate
+
+-- | Auf eine ganze Zahl runden (vom bzw. zum Betrag, symmetrisch um 0).
+roundBy :: Text -> Rational -> Integer
+roundBy mode q =
+  let a = abs q
+      w = numerator a `div` denominator a
+      rest = a - fromInteger w
+      up = case mode of
+        "UP" -> rest > 0
+        "DOWN" -> False
+        "HALF_EVEN" -> rest > 1 % 2 || (rest == 1 % 2 && odd w)
+        _ -> rest >= 1 % 2
+      n = if up then w + 1 else w
+   in if q < 0 then negate n else n

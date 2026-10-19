@@ -141,7 +141,8 @@ plan until Input {..} = (concat docs, concat msgs)
     postedOf = Map.fromListWith (flip (<>)) [(pContract p, [p]) | p <- inPosted]
     loansOf = Map.fromListWith (flip (<>)) [(lnContract l, [l]) | l <- inLoans]
     paymentsOf = Map.fromListWith (flip (<>)) [(lpContract p, [p]) | p <- inLoanPayments]
-    depsOf = Map.fromListWith (flip (<>)) [(dpContract d, [d]) | d <- inDepreciations]
+    depsOf = Map.fromListWith (flip (<>)) [(dpContract d, [roundingOf' d]) | d <- inDepreciations]
+    roundingOf' d = depRounding inRoundings inConditionTypes (maybe 2 decimalsOf (listToMaybe [c | c <- inContracts, cId c == dpContract d])) d
 
     forContract c = case Map.lookup (cType c) inTypes of
       Nothing -> ([], [(cId c, "Vertragsart " <> cType c <> " fehlt")])

@@ -448,7 +448,7 @@ loanTests check = do
 depreciationTests :: (forall a. (Eq a, Show a) => String -> a -> a -> IO ()) -> IO ()
 depreciationTests check = do
   let d = fromGregorian
-      terms = DepTerms "KV-1" (d 2025 7 15) openEnd 30000000 2 Linear (d 2025 7 15) Nothing "0230" "6221" "AF" Nothing 1
+      terms = DepTerms "KV-1" (d 2025 7 15) openEnd 30000000 2 Linear (d 2025 7 15) Nothing "0230" "6221" "AF" Nothing 1 Nothing Nothing
       rows = depSchedule [terms] openEnd (d 2027 12 31)
   check "linear: 2025 sechs Monate, dann volle Jahre" [(d 2025 12 31, 6, 300000), (d 2026 12 31, 12, 600000), (d 2027 12 31, 12, 600000)]
     [(drDue r, drMonths r, drAmount r) | r <- rows]
@@ -472,6 +472,15 @@ depreciationTests check = do
   -- Beginn im Juli, vierteljährlich: Q3 und Q4 je 3 Monate
   let q = concatMap depInstallments (depSchedule [terms {dpInstallments = 4}] openEnd (d 2025 12 31))
   check "Raten: Quartale ab Juli" [(d 2025 9 30, 150000), (d 2025 12 31, 150000)] [(drDue r, drAmount r) | r <- q]
+  -- Rundung auf volle Euro (aufrunden), Beginn Juni, Zugang ab 2016 (ganzes Jahr):
+  -- 33.244 × 2 % = 664,88 → 7 Monate 388, dann 665; 43.885 × 2 % = 877,70 → 878
+  let up = terms {dpStart = d 2013 6 1, dpFrom = d 2013 6 1, dpBase = 3324400, dpRound = Just ("UP", 100)}
+      up2 = up {dpFrom = d 2016 1 1, dpBase = 4388500}
+      rowsUp = depSchedule [up, up2] openEnd (d 2025 12 31)
+  check "Rundung: 388, 665, 665, 878" [38800, 66500, 66500, 87800] (map drAmount (take 4 rowsUp))
+  check "Rundung: Buchwert 31.12.2025" 3338700 (drBookAfter (last rowsUp))
+  check "Rundungsregel der Konditionsart" (Just ("UP", 100))
+    (dpRound (depRounding (Map.fromList [("EUR1", Rounding "EUR1" "UP" 1 False True)]) (Map.fromList [("AF", CondType "AF" Nothing (Just "EUR1"))]) 2 terms))
   -- Plan: Kaufvertrag ohne Partnerkonto, Beleg SA, Aufwand an Anlage, Gebäude als Kontierung
   let kv = Contract "1000" "KV-1" "KV" "ACTIVE" "SELLER" "EUR" "" (d 2025 7 15) openEnd Nothing
       input =
