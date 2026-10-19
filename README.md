@@ -20,7 +20,7 @@ coremesh-labs/
 
 | Plugin | Objects | Inhalt | Version |
 |---|---|---|---|
-| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL; Einzelpreis je Einheit, nachgelagerte Konditionen (Steuer, Prozent; Zuschlag oder Anteil), Rundungsregeln, Tilgungsplan bis Stichtag, Positionen (derselbe Gegenstand mehrfach), je Einheit ohne Objekt = Bemessung des Hauptobjekts, keine Sollstellung bei Abrechnungsweg Eingangsrechnung, Gebäude des Vertragsobjekts auf Erlös- und Aufwandszeilen (Einstellung object_fields); Nebenkostenabrechnung mit Ebenen (Summe, Vorauszahlung, Saldo), Eingaben je Mieter und Wohnung, Ausweis je Mietobjekt, Gesamtschlüssel des Gebäudes (WEG: Anteil der übrigen Eigentümer), Rechenweg je Mieterkonto (Gesamtkosten, Schlüssel, Tage, Faktor) für Abrechnungsschreiben, Kostenaufstellung je Einheit ohne Verteilung (Art COSTS), Abschreibung in Raten im Jahr und mit festem Jahresbetrag | 0.23.0 |
+| `contract-billing` | `ContractBilling`, `ContractBillingCache` | Vertragsbuchung: rechnet und bucht die Sollstellung der Verträge über die Vorerfassung des Hauptbuchs – ohne eigene Daten, ohne SQL; Einzelpreis je Einheit, nachgelagerte Konditionen (Steuer, Prozent; Zuschlag oder Anteil), Rundungsregeln, Tilgungsplan bis Stichtag, Positionen (derselbe Gegenstand mehrfach), je Einheit ohne Objekt = Bemessung des Hauptobjekts, keine Sollstellung bei Abrechnungsweg Eingangsrechnung, Gebäude des Vertragsobjekts auf Erlös- und Aufwandszeilen (Einstellung object_fields); Nebenkostenabrechnung mit Ebenen (Summe, Vorauszahlung, Saldo), Eingaben je Mieter und Wohnung, Ausweis je Mietobjekt, Gesamtschlüssel des Gebäudes (WEG: Anteil der übrigen Eigentümer), Rechenweg je Mieterkonto (Gesamtkosten, Schlüssel, Tage, Faktor) für Abrechnungsschreiben, Kostenaufstellung je Einheit ohne Verteilung (Art COSTS), Abschreibung in Raten im Jahr, mit festem Jahresbetrag und Rundungsregel | 0.24.0 |
 | `profit-loss` | `ProfitLoss`, `TrialBalance`, `AccountSheet`, `PartnerAccounts`, `LedgerReport` | Auswertungen des Hauptbuchs: GuV je Buchungskreis, Gebäude, Wirtschaftseinheit oder Mietobjekt (wahlweise Spalte je Gebäude), Summen- und Saldenliste und Kontoblatt je Gebäude oder Wirtschaftseinheit mit laufendem Saldo, Debitoren und Kreditoren je Abstimmkonto mit Summen, Vertrags- und Partnerkonto sowie Kontostand für die Aktionen am Vertrag und Geschäftspartner – Bildschirm und CSV, nichts wird gespeichert | 0.3.0 |
 
 ## Bauen, testen, starten
@@ -122,7 +122,8 @@ Davor entstehen weder Sollstellungen noch Nachberechnungen.
 **Abschreibung** (seit 0.10.0, `Billing.Depreciation`): aus `ContractDepreciation` je Jahr eine
 Fälligkeit zum 31.12. bzw. Vertragsende, monatsgenau (erstes Jahr ab dem Monat des Beginns);
 linear = Bemessungsgrundlage × Satz (oder fester Jahresbetrag, seit 0.23.0), degressiv = Buchwert × Satz,
-jeweils × Monate / 12, bis Buchwert 0. Höhere Bemessungsgrundlage in einer neuen Zeitscheibe = Zugang
+jeweils × Monate / 12, gerundet nach der Rundungsregel der Abschreibung bzw. der Konditionsart
+(seit 0.24.0, z. B. auf volle Euro aufrunden: Art UP, Schrittweite 1; ohne Regel auf Cent), bis Buchwert 0. Höhere Bemessungsgrundlage in einer neuen Zeitscheibe = Zugang
 für das ganze Jahr. **Raten im Jahr** (seit 0.23.0; 12 = monatlich, 4 = vierteljährlich): der
 Jahresbetrag nach Monaten auf die Kalenderperioden, fällig zum Periodenende, Rundungsrest in der
 letzten Rate. Gebucht wird erst ab „Sollstellung ab“ des Vertrags (Übernahme: der Plan rechnet ab

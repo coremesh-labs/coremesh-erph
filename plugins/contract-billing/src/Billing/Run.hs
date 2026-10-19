@@ -411,7 +411,9 @@ depreciationPlan cache call cc contractId = do
     (_, []) -> pluginError NotFound ("Vertrag " <> contractId <> " gibt es im Buchungskreis " <> cc <> " nicht")
     (_, k : _) -> do
       dec <- currencyDecimals call (cCurrency k)
-      let rows = depSchedule mine (cTo k) (fromGregorian 2199 12 31)
+      roundings <- Map.fromList . map (\r -> (rCode r, r)) . concatMap (maybe [] pure . rounding) <$> get RoundingRules
+      types <- Map.fromList . map (\t -> (ktCode t, t)) . map condType <$> get ConditionTypes
+      let rows = depSchedule (map (depRounding roundings types dec) mine) (cTo k) (fromGregorian 2199 12 31)
           amt = formatAmount dec
           total = sum (map drAmount rows)
           lastYear = case reverse rows of

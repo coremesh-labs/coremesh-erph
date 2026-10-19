@@ -409,6 +409,8 @@ depTerms r = do
       , dpType = let t = text "condition_type" r in if T.null t then "AF" else t
       , dpAnnual = int "annual_amount" r
       , dpInstallments = maybe 1 fromIntegral (int "installments" r)
+      , dpRoundingCode = textMaybe "rounding_rule" r
+      , dpRound = Nothing
       }
 
 loanPayment :: Record -> Maybe LoanPayment

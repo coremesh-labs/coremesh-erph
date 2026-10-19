@@ -17,6 +17,7 @@ module Billing.Pricing
   , TaxCode (..)
   , builtinRounding
   , roundMinor
+  , depRounding
   , parseDecimal
   , rounding
   , dependentType
@@ -24,11 +25,15 @@ module Billing.Pricing
   , taxCode
   ) where
 
-import Data.Ratio (denominator, numerator, (%))
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
+import Data.Ratio ((%))
 import Data.Text (Text)
 import Data.Text qualified as T
 
 import Billing.Data (Record, bool, int, text, textMaybe)
+import Billing.Depreciation (DepTerms (..))
+import Billing.Schedule (roundBy)
 
 data Rounding = Rounding
   { rCode :: Text
@@ -50,19 +55,14 @@ roundMinor r dec v =
       n = roundBy (rMode r) (v / inc)
    in roundBy "HALF_UP" (fromInteger n * inc * fromInteger (10 ^ dec))
 
--- | Auf eine ganze Zahl runden (vom bzw. zum Betrag, symmetrisch um 0).
-roundBy :: Text -> Rational -> Integer
-roundBy mode q =
-  let a = abs q
-      w = numerator a `div` denominator a
-      rest = a - fromInteger w
-      up = case mode of
-        "UP" -> rest > 0
-        "DOWN" -> False
-        "HALF_EVEN" -> rest > 1 % 2 || (rest == 1 % 2 && odd w)
-        _ -> rest >= 1 % 2
-      n = if up then w + 1 else w
-   in if q < 0 then negate n else n
+-- | Rundungsregel einer Abschreibung: die eigene, sonst die der Konditionsart
+-- (z. B. AF); Schrittweite in der kleinsten Einheit. Ohne Regel bleibt es beim
+-- Runden auf die kleinste Einheit.
+depRounding :: Map Text Rounding -> Map Text CondType -> Int -> DepTerms -> DepTerms
+depRounding roundings types dec d =
+  case [r | Just code <- [dpRoundingCode d, Map.lookup (dpType d) types >>= ktRounding], Just r <- [Map.lookup code roundings], rActive r] of
+    r : _ -> d {dpRound = Just (rMode r, rIncrement r * fromInteger (10 ^ dec))}
+    [] -> d
 
 -- | "1.250,5" (deutsch), "1250.5", "19" → Dezimalzahl.
 parseDecimal :: Text -> Maybe Rational
