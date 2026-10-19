@@ -425,9 +425,9 @@ depreciationPlan cache call cc contractId = do
                  )
           , "table"
               .= object
-                [ "columns" .= (["Jahr bis", "Monate", "Buchwert Anfang", "Zugang", "Abschreibung", "Buchwert Ende"] :: [Text])
+                [ "columns" .= (["Jahr bis", "Monate", "Raten", "Buchwert Anfang", "Zugang", "Abschreibung", "Buchwert Ende"] :: [Text])
                 , "rows"
-                    .= [ [formatDay (drDue r), tshow (drMonths r), amt (drBookBefore r - drAddition r), amt (drAddition r), amt (drAmount r), amt (drBookAfter r)]
+                    .= [ [formatDay (drDue r), tshow (drMonths r), tshow (length (depInstallments r)), amt (drBookBefore r - drAddition r), amt (drAddition r), amt (drAmount r), amt (drBookAfter r)]
                        | r <- rows
                        ]
                 ]
