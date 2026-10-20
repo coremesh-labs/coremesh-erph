@@ -79,7 +79,7 @@ import Billing.Settlement (Check (..), Level (..))
 data Def = Def
   { dfUnit :: Text -- ^ Abrechnungseinheit (Eigentümerkonto der Rundung)
   , dfScale :: Integer -- ^ Faktor auf Cent
-  , dfRounding :: Text -- ^ TENANTS_OR_OWNER | OWNER
+  , dfRounding :: Text -- ^ TENANTS_OR_OWNER | OWNER | COMMERCIAL
   , dfFrom :: Day
   , dfTo :: Day
   , dfCostsOnly :: Bool -- ^ Kostenaufstellung je Einheit (Art COSTS): sammeln ohne Verteilung, keine Mieter
@@ -649,22 +649,34 @@ personDays OpInput {..} obj =
     , Just iv <- [overlap (ocFrom o, ocTo o) (psFrom p, psTo p)]
     ]
 
--- | Mieter und Eigentümer auf Cent abrunden; Rundung nach Regel verteilen.
+-- | Mieter und Eigentümer auf Cent runden; Rundung nach Regel verteilen.
+-- TENANTS_OR_OWNER, OWNER: abrunden, Rest nach Regel; COMMERCIAL: jede Position
+-- kaufmännisch (ab 0,5 Cent auf), kein Posten Rundung beim Mieter – die
+-- Differenz (auch negativ) trägt der Eigentümer.
 roundToCents :: Def -> Integer -> [Text] -> St -> (St, Integer)
 roundToCents def step tenants st0 = (st2, rc)
   where
     scale = dfScale def
-    mk dr cr amt txt = JLine step 0 dr cr amt txt "" "Rundung"
+    commercial = dfRounding def == "COMMERCIAL"
+    -- negative Beträge (Aufrunden) mit getauschtem Soll und Haben
+    mk dr cr amt txt
+      | amt < 0 = JLine step 0 cr dr (negate amt) txt "" "Rundung"
+      | otherwise = JLine step 0 dr cr amt txt "" "Rundung"
     final = \case
       M _ _ -> True
       T {} -> True
       E _ _ -> True
       _ -> False
-    st1 = foldl' (\s (a, b) -> book (mk R a (b - (b `div` scale) * scale) "Abrunden auf Cent") s) st0 (accounts final st0)
-    rc = balance R st1 `div` scale
+    cut b
+      | commercial = signum b * ((abs b + scale `div` 2) `div` scale) * scale
+      | otherwise = (b `div` scale) * scale
+    cutText = if commercial then "kaufmännisch auf Cent" else "Abrunden auf Cent"
+    st1 = foldl' (\s (a, b) -> book (mk R a (b - cut b) cutText) s) st0 (accounts final st0)
+    rc = (if commercial then quot else div) (balance R st1) scale
     n = toInteger (length tenants)
     owner = E (dfUnit def) "RUNDUNG"
     st2
+      | commercial = book (mk owner R (rc * scale) (tshow rc <> " Cent Rundung an den Eigentümer")) st1
       | rc <= 0 = st1
       | dfRounding def == "TENANTS_OR_OWNER" && n > 0 && rc >= n =
           let q = rc `div` n
@@ -675,6 +687,7 @@ roundToCents def step tenants st0 = (st2, rc)
 roundingText :: Def -> Int -> Integer -> Text
 roundingText def n rc
   | rc == 0 = "keine Rundung"
+  | dfRounding def == "COMMERCIAL" = "Positionen kaufmännisch gerundet, Differenz " <> tshow rc <> " Cent an den Eigentümer"
   | dfRounding def == "TENANTS_OR_OWNER" && n > 0 && rc >= toInteger n = tshow rc <> " Cent auf " <> tshow n <> " Mieter verteilt, Rest an den Eigentümer"
   | otherwise = tshow rc <> " Cent an den Eigentümer"
 

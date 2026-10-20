@@ -614,6 +614,14 @@ opCostTests check = do
   check "NK: Rest an den Eigentümer" (19835 + 1) (orOwnerTotal one)
   check "NK: MV2 zeitanteilig" [20164] [trCosts t | t <- orTenants one, trContract t == "MV2"]
   -- Rechenweg je Mieterkonto: Gesamtkosten, Schlüssel 60/100, Tage 365/365, Faktor 0,6
+  -- COMMERCIAL: jede Position kaufmännisch, kein Posten Rundung beim Mieter, Differenz an den Eigentümer
+  let com = computeOpCost inp {opDef = (opDef inp) {dfRounding = "COMMERCIAL"}}
+      comT c = [(trCosts t, trLines t) | t <- orTenants com, trContract t == c]
+  -- Wasser MV1 559,08… → 559,08, Abwasser MV2 60,49… → 60,49, Wasser MV2 140,91… → 140,92
+  check "NK kaufmännisch: MV1" [(103908, [("Abwasser", 18000), ("Grundsteuer", 30000), ("Wasserversorgung", 55908)])] (comT "MV1")
+  check "NK kaufmännisch: MV2" [(22641, [("Abwasser", 6049), ("Heizung", 2500), ("Wasserversorgung", 14092)])] (comT "MV2")
+  check "NK kaufmännisch: Summe" [Ok] [chLevel c | c <- orChecks com, chName c == "Summe"]
+  check "NK kaufmännisch: Journal ausgeglichen" True (all ((> 0) . jAmount) (orJournal com))
   check "NK: Detail MV1"
     [Detail "WASSER" "W1" 100000 "Wohnfläche" (Just 60) (Just 100) (Just 365) (Just 365) "Tage" 0.6 60000]
     [d | t <- orTenants one, trContract t == "MV1", d <- trDetails t, dtAccount d == "WASSER"]
