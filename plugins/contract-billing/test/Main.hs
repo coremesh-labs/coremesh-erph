@@ -558,7 +558,7 @@ opCostTests check = do
   let d = fromGregorian
       y = (d 2025 1 1, d 2025 12 31)
       rule no step kind src val pool cat key =
-        Rule no step "" kind cat src val pool "" 0 key True "SERVICE_PERIOD" [] "OBJECTS"
+        Rule no step "" kind cat src val pool "" 0 key True "SERVICE_PERIOD" [] "OBJECTS" []
       rules =
         [ rule 10 1 "COLLECT" "LEDGER" "6300" "WASSER" "Wasser" ""
         , rule 20 1 "COLLECT" "INVOICE" "GRUNDSTEUER" "GRST" "Grundsteuer" ""
@@ -613,6 +613,14 @@ opCostTests check = do
   check "NK: Rundung 1 Cent" 1 (orRounding one)
   check "NK: Rest an den Eigentümer" (19835 + 1) (orOwnerTotal one)
   check "NK: MV2 zeitanteilig" [20164] [trCosts t | t <- orTenants one, trContract t == "MV2"]
+  -- Nicht vereinbart (alter Vertrag): Anteil von MV2 an W2 trägt der Eigentümer, MV1 unverändert
+  let excl = computeOpCost inp {opRules = take 1 rules <> [(rule 50 3 "DISTRIBUTE" "" "" "WASSER" "Wasser" "WFL") {ruExcluded = ["MV2"]}], opSources = take 1 (opSources inp)}
+  check "NK nicht vereinbart: MV1 unverändert" [60000] [trCosts t | t <- orTenants excl, trContract t == "MV1"]
+  check "NK nicht vereinbart: MV2 ohne Wasser" [] [a | t <- orTenants excl, trContract t == "MV2", (_, a) <- trLines t, a /= 0]
+  check "NK nicht vereinbart: Eigentümer 400,00" 40000 (orOwnerTotal excl)
+  let exclP = computeOpCost inp {opRules = take 1 rules <> [(rule 50 3 "DISTRIBUTE" "" "" "WASSER" "Wasser" "PERS") {ruExcluded = ["MV2"]}], opSources = take 1 (opSources inp)}
+  check "NK nicht vereinbart, Personen: MV2 ohne Wasser" [] [a | t <- orTenants exclP, trContract t == "MV2", (_, a) <- trLines t, a /= 0]
+  check "NK nicht vereinbart, Personen: Summe" [Ok] [chLevel c | c <- orChecks exclP, chName c == "Summe"]
   -- Rechenweg je Mieterkonto: Gesamtkosten, Schlüssel 60/100, Tage 365/365, Faktor 0,6
   -- COMMERCIAL: jede Position kaufmännisch, kein Posten Rundung beim Mieter, Differenz an den Eigentümer
   let com = computeOpCost inp {opDef = (opDef inp) {dfRounding = "COMMERCIAL"}}
