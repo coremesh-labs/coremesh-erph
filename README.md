@@ -307,3 +307,13 @@ zum Stichtag – das Hauptbuch trägt keine Salden vor, Anfangsbestände sind ge
 Tests (`cabal test profit-loss:test:spec`): Zeitraum, Bilanz- und unbekannte Konten, Storno
 (Konto ohne Bewegung entfällt), Vorzeichen je Bereich, Ergebnis, Tabelle, Beträge, CSV-Maskierung,
 eigene Bereiche aus den Einstellungen.
+
+
+## Lizenz
+
+Copyright © 2026 die CoreMesh-Autoren. Lizenziert unter der **European Union Public Licence
+v. 1.2** (EUPL-1.2, Text in `LICENSE`; amtliche Fassungen in allen EU-Sprachen, auch Deutsch:
+https://eur-lex.europa.eu/eli/dec_impl/2017/863/oj). Bibliotheken und eingebettete Programme
+anderer Autoren mit ihren Lizenzen: `THIRD_PARTY_NOTICES.md` (erzeugt mit
+`coremesh/tools/third_party_notices.py`; vor jedem Release neu erzeugen und mit den Programmen
+ausliefern).
