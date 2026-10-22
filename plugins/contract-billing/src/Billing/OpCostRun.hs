@@ -33,6 +33,7 @@ import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.Map.Strict qualified as Map
+import Control.Exception (try)
 import Control.Monad (join)
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Set qualified as Set
@@ -68,7 +69,7 @@ computeOpCostRun cache call p = do
       tenantTypes = list' "tenant_contract_types"
       advanceTypes = list' "advance_types"
       ledger = fromMaybe "0L" (textMaybe "ledger" defRec)
-      rules = mapMaybe rule (objects "rules" p)
+      rules0 = mapMaybe rule (objects "rules" p)
       keys = Map.fromList [(akCode k, k) | k <- map allocKey (objects "keys" p)]
   if scale <= 0 then pluginError InvalidArgument "Rechengenauigkeit: Faktor > 0 erwartet" else pure ()
   if from > to then pluginError InvalidArgument "Zeitraum: von liegt nach bis" else pure ()
@@ -95,6 +96,32 @@ computeOpCostRun cache call p = do
         , Just (a, b) <- [overlap period (cFrom c, cTo c) >>= overlap (oFrom co, oTo co)]
         ]
       tenantSet = Set.fromList (map ocContract occupancy)
+  -- Nicht vereinbart (z. B. alte Verträge): Verträge mit dem Tag der Verteilregel am
+  -- Mietvertrag (Werte leer = Tag vorhanden) zu Beginn oder Ende des Zeitraums
+  let findTag :: Text -> Day -> Maybe Text -> IO [Text]
+      findTag tag d mv = do
+        let base = ["entity_type" .= ("Contract" :: Text), "company_code" .= cc, "tag" .= tag, "effective_date" .= iso8601Show d]
+            ask :: Maybe Value -> IO Value
+            ask v = dispatch sys "Tags" "find" (object (base <> maybe [] (\x -> ["value" .= x]) v))
+        r <- case mv of
+          Nothing -> ask Nothing
+          Just v -> do
+            o <- try (ask (Just (object ["option" .= v])))
+            either (\(_ :: PluginError) -> ask (Just (object ["string" .= v]))) pure o
+        pure $ case r of
+          Object o | Just (Array xs) <- KM.lookup "entity_ids" o -> [snd (T.breakOnEnd "|" x) | String x <- foldr (:) [] xs]
+          _ -> []
+  exclusions <-
+    Map.fromList
+      <$> sequence
+        [ (n,) . filter (`Set.member` tenantSet) . concat <$> sequence [findTag tag d v | d <- [from, to], v <- if null vals then [Nothing] else map Just vals]
+        | rr <- objects "rules" p
+        , Just n <- [int "rule_no" rr]
+        , let tag = T.strip (text "exclude_tag" rr)
+              vals = codes (text "exclude_values" rr)
+        , not (T.null tag)
+        ]
+  let rules = [r {ruExcluded = Map.findWithDefault [] (ruNo r) exclusions} | r <- rules0]
   persons <-
     if any (\k -> akBasis k == "PERSONS") (Map.elems keys)
       then
@@ -447,6 +474,7 @@ rule r = do
       , ruKeyTotal = fromMaybe "OBJECTS" (textMaybe "key_total" r)
       , ruAssignment = fromMaybe (if text "source_type" r == "LEDGER" then "POSTING_DATE" else "SERVICE_PERIOD") (textMaybe "assignment" r)
       , ruInputs = codes (text "source_value" r)
+      , ruExcluded = []
       }
 
 allocKey :: Record -> AllocKey

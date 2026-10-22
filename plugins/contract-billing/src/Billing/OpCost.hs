@@ -102,6 +102,7 @@ data Rule = Rule
   , ruAssignment :: Text -- ^ Zuordnung der Quelle: SERVICE_PERIOD | POSTING_DATE | DOCUMENT_DATE
   , ruInputs :: [Text] -- ^ SUM: Konten; BALANCE: [A, B]
   , ruKeyTotal :: Text -- ^ DISTRIBUTE nach Bemessung: OBJECTS (Summe der Mietobjekte) | BUILDING (Bemessung des Gebäudes, z. B. MEA 1000 der WEG)
+  , ruExcluded :: [Text] -- ^ DISTRIBUTE: Verträge, mit denen diese Kosten nicht vereinbart sind – ihren Anteil trägt der Eigentümer
   }
   deriving stock (Show)
 
@@ -591,7 +592,10 @@ distribute inp@OpInput {..} r st0 = case Map.lookup (ruKey r) opKeys of
     -- Topf → Mieter nach Personentagen
     personsDirect k st =
       let a = balance (S pool) st
-          ws = [(M c pool, w, tshow w <> " Personentage") | (c, w) <- Map.toList (personDays inp Nothing)]
+          ws =
+            [ if excluded c then (E (objectOf c) pool, w, notAgreed c <> tshow w <> " Personentage") else (M c pool, w, tshow w <> " Personentage")
+            | (c, w) <- Map.toList (personDays inp Nothing)
+            ]
        in if a == 0 then st else splitBook "OBJECT" (akName k) st (S pool) a [(acc, fromInteger w, t) | (acc, w, t) <- ws] ("(" <> akName k <> ")")
     -- Mietobjekt → Mieter und Leerstand
     toTenants k st = foldl' (objectToTenants k) st (accounts isPoolObject st)
@@ -603,13 +607,15 @@ distribute inp@OpInput {..} r st0 = case Map.lookup (ruKey r) opKeys of
         let occ = [x | x <- opOccupancy, ocObject x == o]
             tenantWeights
               | akBasis k == "PERSONS" =
-                  [ (T c o pool, fromInteger w, tshow w <> " Personentage")
+                  [ tenant c (fromInteger w) (tshow w <> " Personentage")
                   | (c, w) <- Map.toList (personDays inp (Just o)), w > 0
                   ]
               | otherwise =
-                  [ (T c o pool, fromInteger n, tshow n <> " Tage " <> formatDay f <> "–" <> formatDay t)
+                  [ tenant c (fromInteger n) (tshow n <> " Tage " <> formatDay f <> "–" <> formatDay t)
                   | (c, (n, f, t)) <- Map.toList (Map.fromListWith merge [(ocContract x, (days (ocFrom x, ocTo x), ocFrom x, ocTo x)) | x <- occ])
                   ]
+            -- nicht vereinbart: Anteil des Mieters an den Eigentümer, wie Leerstand
+            tenant c w t = if excluded c then (E o pool, w, notAgreed c <> t) else (T c o pool, w, t)
             vacancy = pdays - covered [(ocFrom x, ocTo x) | x <- occ]
             weights
               | null tenantWeights = [(E o pool, 1, "kein Mieter")]
@@ -618,6 +624,9 @@ distribute inp@OpInput {..} r st0 = case Map.lookup (ruKey r) opKeys of
          in splitBook "TENANT" (if akBasis k == "PERSONS" then akName k else "Tage") st acc b weights ("Objekt " <> o)
       _ -> st
     merge (n1, f1, t1) (n2, f2, t2) = (n1 + n2, min f1 f2, max t1 t2)
+    excluded c = c `elem` ruExcluded r
+    notAgreed c = "nicht vereinbart (" <> c <> ") – "
+    objectOf c = maybe "" ocObject (listToMaybe [x | x <- opOccupancy, ocContract x == c])
     -- Betrag nach Gewichten aufteilen, jeden Anteil abrunden, Rest auf R:
     splitBook stage keyName st0' from amount ws label =
       let total = sum [w | (_, w, _) <- ws]
