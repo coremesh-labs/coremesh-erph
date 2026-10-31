@@ -36,12 +36,13 @@ main = do
   -- Rechnungsvorlage aus Abrechnungsweg der Vertragsart und Konditionsart (Rohdaten ohne is_template)
   let recs cols = records cols . map (map String)
       types = recs ["code", "billing_mode"] [["MV", "POSTING"], ["DLHW", "INVOICE"], ["VE", "BOTH"]]
-      kinds = recs ["code", "billing_form"] [["FO", "CLAIM"], ["RP", "INVOICE"]]
+      kinds = recs ["code", "billing_form"] [["FO", "CLAIM"], ["RP", "INVOICE"], ["NB", "MEMO"]]
       cond t k = head (recs ["contract_type", "condition_kind"] [[t, k]])
   check "Vorlage: Sollstellung" False (isTemplate types kinds (cond "MV" "FO"))
   check "Vorlage: Eingangsrechnung" True (isTemplate types kinds (cond "DLHW" "FO"))
   check "Vorlage: beides, Forderung" False (isTemplate types kinds (cond "VE" "FO"))
   check "Vorlage: beides, Rechnungsposition" True (isTemplate types kinds (cond "VE" "RP"))
+  check "nachrichtlich: keine Sollstellung" True (isTemplate types kinds (cond "MV" "NB"))
 
   -- Monatlich vorschüssig am 3., volle Monate, bis Ende November
   let m = dues Monthly InAdvance 3 (fixed 100000) (d 2026 10 1) (d 2026 12 31) (d 2026 11 30)
