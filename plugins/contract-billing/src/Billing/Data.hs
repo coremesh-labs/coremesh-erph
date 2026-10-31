@@ -252,9 +252,10 @@ contractType r =
 
 -- | Rechnungsvorlage (seit 0.17.0 hier berechnet; die Rohdaten der Kondition tragen es
 -- nicht): Abrechnungsweg der Vertragsart INVOICE, oder BOTH und die Konditionsart ist
--- eine Rechnungsposition (billing_form INVOICE). Keine Sollstellung.
+-- eine Rechnungsposition (billing_form INVOICE). Keine Sollstellung. Ebenso nachrichtliche
+-- Konditionen (billing_form MEMO, seit 0.27.0, z. B. Bürgschaft): nur der Betrag am Vertrag.
 isTemplate :: [Record] -> [Record] -> Record -> Bool
-isTemplate types kinds r = bool "is_template" r || mode == "INVOICE" || (mode == "BOTH" && form == "INVOICE")
+isTemplate types kinds r = bool "is_template" r || mode == "INVOICE" || (mode == "BOTH" && form == "INVOICE") || form == "MEMO"
   where
     mode = maybe "" (text "billing_mode") (find' "code" (text "contract_type" r) types)
     form = maybe "" (text "billing_form") (find' "code" (text "condition_kind" r) kinds)
