@@ -481,6 +481,7 @@ setItem r = do
         , siCostType = text "cost_type" r, siTotal = int "total_cost" r, siKey = text "allocation_key" r
         , siKeyTotal = dec "key_total", siKeyShare = dec "key_share", siAmount = amount, siAccount = text "account_number" r
         , siObjectType = text "object_type" r, siObject = text "object_id" r
+        , siChargeType = text "charge_type" r, siChargeId = text "charge_id" r
         }
     )
 
@@ -599,6 +600,11 @@ settlementPost cache call req@SettlementRequest {..} = do
     [] -> pluginError InvalidArgument ("Partnerkonto fehlt oder Buchungssperre: " <> cPartner c <> " in der Rolle " <> ctRole ct)
   accounts <- map account <$> slice cache sys srCompany Accounts
   status <- fieldStatus <$> slice cache sys srCompany FieldStatuses
+  objPostingRecs <- readAllOrEmpty sys "ObjectPosting" [("company_code", String srCompany)]
+  let objPosting =
+        Map.union
+          (Map.fromList [(text "object_type" r, text "ledger_field" r) | r <- objPostingRecs, not (T.null (text "ledger_field" r))])
+          (Map.fromList [("RentObject", "rent_object_id"), ("Building", "dimension_custom_1"), ("BusinessEntity", "dimension_custom_2")])
   let label = "Abrechnung " <> formatDay (shFrom h) <> "–" <> formatDay (shTo h)
       advancesByAccount = [(pAccount p, pAmount p) | p <- ldAdvances ld]
       diff = itemTotal (ldItems ld) - sum (map snd advancesByAccount)
@@ -625,10 +631,18 @@ settlementPost cache call req@SettlementRequest {..} = do
                 ]
           ]
     draftId <- strField "id" draft
-    let fieldsFor PlanLine {..} =
+    -- Objekt der Kostenzeile nach der Kontierung der Objekte (Einkauf), die Partnerzeile
+    -- mit dem einen Objekt aller Kostenzeilen; Belastung an (seit 0.28.0)
+    let lineObjects = nub [o | PlanLine {plObject = Just o, plPartner = False} <- plan']
+        objField t = Map.findWithDefault "" t objPosting
+        fieldsFor PlanLine {..} =
           [("rent_contract_id", cId c)]
-            <> [("rent_object_id", o) | Just ("RentObject", o) <- [plObject]]
+            <> [ (objField t, o)
+               | Just (t, o) <- [if plPartner then (case lineObjects of [x] -> Just x; _ -> Nothing) else plObject]
+               , not (T.null (objField t))
+               ]
             <> [("supplier_id", cPartner c) | plPartner]
+            <> concat [[("charge_type", t), ("charge_id", i)] | Just (t, i) <- [plCharge], not (T.null i)]
     mapM_
       ( \l@PlanLine {..} ->
           dispatch tx "JournalDraftItem" "create" $

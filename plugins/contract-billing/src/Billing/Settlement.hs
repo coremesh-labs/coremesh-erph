@@ -69,6 +69,8 @@ data SetItem = SetItem
   , siAccount :: Text
   , siObjectType :: Text
   , siObject :: Text
+  , siChargeType :: Text -- ^ seit 0.28.0: Belastung an (Belastungsart des Einkaufs), leer = keine
+  , siChargeId :: Text
   }
   deriving stock (Show)
 
@@ -92,6 +94,7 @@ data PlanLine = PlanLine
   , plText :: Text
   , plObject :: Maybe (Text, Text) -- ^ Objektart, Objekt
   , plPartner :: Bool -- ^ Partnerkonto (Kreditor) – mit Partner kontieren
+  , plCharge :: Maybe (Text, Text) -- ^ seit 0.28.0: Belastung an (Art, Kennung)
   }
   deriving stock (Eq, Show)
 
@@ -179,7 +182,8 @@ settlementLines label h items advancesByAccount partnerAccount = do
       then Right Nothing
       else maybe (Left "Entnahme aus der Rücklage: Gegenkonto fehlt") (Right . Just) (shWithdrawalAccount h)
   let costLines =
-        [ line (siAccount i) True (siAmount i) (siCategory i <> " " <> label) (obj i) False
+        [ (line (siAccount i) True (siAmount i) (siCategory i <> " " <> label) (obj i) False)
+            {plCharge = if T.null (siChargeType i) then Nothing else Just (siChargeType i, siChargeId i)}
         | i <- sortOn siLine items
         , siAmount i /= 0
         ]
@@ -202,7 +206,7 @@ settlementLines label h items advancesByAccount partnerAccount = do
       let side
             | (amt >= 0) == debit = "S"
             | otherwise = "H"
-       in PlanLine acc side (abs amt) txt o p
+       in PlanLine acc side (abs amt) txt o p Nothing
 
 tshow :: Show a => a -> Text
 tshow = T.pack . show
