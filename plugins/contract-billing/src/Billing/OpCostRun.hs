@@ -135,6 +135,8 @@ computeOpCostRun cache call p = do
   -- Mietobjekte; Gebäude der Einheit für den Gesamtschlüssel (z. B. MEA der WEG)
   let measurements = filter ((`Set.member` objectIds) . mObject) allMeasurements
       totals = filter ((`Set.member` buildings) . mObject) allMeasurements
+  -- Belastungsarten des Einkaufs (seit 0.28.0): Art → (belastet wird, Objektart)
+  chargeKinds <- Map.fromList . map (\r -> (text "code" r, (text "kind" r, text "object_type" r))) <$> readAllOrEmpty sys "ChargeType" byCC
   -- Kontierung → Ziel; Nothing = gehört nicht zu dieser Einheit
   let target mContract objType objId
         | Just c <- mContract, c `Set.member` tenantSet = Just (ToTenant c)
@@ -143,6 +145,15 @@ computeOpCostRun cache call p = do
         | objType == "Building" = if objId `Set.member` buildings then Just ToPool else Nothing
         | objType == "BusinessEntity" = if unitType == "BusinessEntity" && objId == unit then Just ToPool else Nothing
         | otherwise = Nothing
+      -- Belastung an (Feld charge_type/charge_id an Buchungszeile, Rechnungs- und
+      -- Abrechnungsposition) geht vor: Objekt → dessen Mieter, Vertrag → dieser Mieter,
+      -- Person → nicht umgelegt (eigene Weiterbelastung); ohne Belastung das Ziel dflt
+      charged rec dflt = case Map.lookup (text "charge_type" rec) chargeKinds of
+        Nothing -> dflt
+        Just ("CONTRACT", _) -> let c = text "charge_id" rec in if c `Set.member` tenantSet then Just (ToTenant c) else Nothing
+        Just ("OBJECT", objType) -> if T.null (text "charge_id" rec) then dflt else target Nothing objType (text "charge_id" rec)
+        Just ("PERSON", _) -> Nothing
+        Just _ -> dflt
       collects t = [r | r <- rules, ruKind r == "COLLECT", ruSourceType r == t]
       inPeriod d = d >= from && d <= to
       -- Zuordnung nach Datum: Buchungs- oder Belegdatum im Zeitraum, dann ganz
@@ -183,7 +194,7 @@ computeOpCostRun cache call p = do
               , T.null (text "ledger" it) || text "ledger" it == ledger
               , Just amt <- [int "amount_local_curr" it]
               , let (objType, objId) = itemObject it
-              , Just tgt <- [target (textMaybe "rent_contract_id" it) objType objId]
+              , Just tgt <- [charged it (target (textMaybe "rent_contract_id" it) objType objId)]
               , let ref = "JE:" <> docNo <> "/" <> text "line_item_number" it
                     formula = "Beleg " <> docNo <> " Pos. " <> text "line_item_number" it <> snd dl <> " " <> formatDay (fst dl) <> textSuffix (text "item_text" it)
               ]
@@ -212,7 +223,7 @@ computeOpCostRun cache call p = do
           , Just h <- [Map.lookup (text "invoice_id" it) heads]
           , let (objType, objId) =
                   if T.null (text "object_id" it) then (text "object_type" h, text "object_id" h) else (text "object_type" it, text "object_id" it)
-          , Just tgt <- [target (textMaybe "contract_id" it) objType objId]
+          , Just tgt <- [charged it (target (textMaybe "contract_id" it) objType objId)]
           -- seit 0.13.0: Kostenbetrag (netto − Anteil + verteilte Zuschläge und nicht abziehbare Steuer), sonst Betrag
           , Just total <- [maybe (int "amount" it) Just (int "cost_amount" it)]
           , Just (amt, part, warning) <- [assign r h it total]
@@ -237,7 +248,7 @@ computeOpCostRun cache call p = do
                     [] -> case [() | co <- os, Just ToPool == target Nothing (oType co) (oId co)] of
                       _ : _ -> Just ToPool
                       [] -> Nothing
-            itemTarget it = if T.null (text "object_id" it) then contractTarget (text "contract_id" it) else target Nothing (text "object_type" it) (text "object_id" it)
+            itemTarget it = charged it (if T.null (text "object_id" it) then contractTarget (text "contract_id" it) else target Nothing (text "object_type" it) (text "object_id" it))
             headOf it = Map.lookup (text "contract_id" it, T.take 10 (text "period_from" it)) heads
             isPosted h = text "status" h == "POSTED"
             hPeriod h = (,) <$> day "period_from" h <*> day "period_to" h

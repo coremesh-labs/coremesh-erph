@@ -513,7 +513,7 @@ settlementTests check = do
           , shStatedAdvances = Just 360000, shStatedResult = Just (-152203), shReserveOpening = Just 420000, shReserveWithdrawal = 0
           , shReserveClosing = Just 480000, shReserveAccount = Nothing, shWithdrawalAccount = Nothing, shStatus = "OPEN"
           }
-      item n cat typ total kt ks amt acc = SetItem n "" cat typ total (if kt == Nothing then "" else "MEA") kt ks amt acc "RentObject" "WG001"
+      item n cat typ total kt ks amt acc = SetItem n "" cat typ total (if kt == Nothing then "" else "MEA") kt ks amt acc "RentObject" "WG001" "" ""
       water = item 1 "WASSER" "ALLOCABLE" (Just 1240000) (Just 1000) (Just (8532 / 100)) 105797 "7000"
       items = [water, item 2 "VERWALT" "NON_ALLOCABLE" Nothing Nothing Nothing 42000 "7300", item 3 "RUECKL" "RESERVE" Nothing Nothing Nothing 60000 "1550"]
       prev = Just (h {shFrom = d 2024 1 1, shTo = d 2024 12 31, shReserveClosing = Just 420000}, items)
@@ -549,6 +549,10 @@ settlementTests check = do
       check "Entnahme: Gegenkonto Soll, Rücklage Haben" [("7100", "S", 50000), ("1550", "H", 50000)]
         [(plAccount l, plSide l, plAmount l) | l <- ls, plText l == "Entnahme Rücklage A"]
       check "Nachzahlung Haben Kreditor" [("2900", "H", 107797)] [(plAccount l, plSide l, plAmount l) | l <- ls, plPartner l]
+  -- Belastung an (0.28.0): Sondergebühr an den Mietvertrag, nur an der Kostenzeile
+  case settlementLines "A" h [water {siChargeType = "MIETER", siChargeId = "RV-1"}] [("1590", 100000)] "2900" of
+    Left e -> check "Plan mit Belastung" "" e
+    Right ls -> check "Belastung an der Kostenzeile" [Just ("MIETER", "RV-1"), Nothing, Nothing] (map plCharge ls)
   check "Entnahme ohne Gegenkonto" (Left "Entnahme aus der Rücklage: Gegenkonto fehlt")
     (either Left (const (Right ())) (settlementLines "A" h {shReserveWithdrawal = 1} items [] "2900"))
 
