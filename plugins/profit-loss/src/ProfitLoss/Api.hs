@@ -40,7 +40,7 @@ import Data.Scientific (toBoundedInteger)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
-import Data.Time.Calendar (Day, fromGregorian, toGregorian)
+import Data.Time.Calendar (Day, fromGregorian, gregorianMonthLength, toGregorian)
 import Data.Time.Clock (getCurrentTime, utctDay)
 import Data.Time.Format.ISO8601 (iso8601ParseM, iso8601Show)
 
@@ -51,7 +51,7 @@ import ProfitLoss.Objects
 import ProfitLoss.Report
 
 version :: Text
-version = "0.3.0"
+version = "0.4.0"
 
 profitLossPlugin :: IORef Settings -> Plugin
 profitLossPlugin ref =
@@ -70,7 +70,8 @@ profitLossPlugin ref =
     }
 
 -- | settings: ledger (Standard 0L), sections: [{title, side: INCOME|EXPENSE, account_types: [...]}],
--- building_field (Kontierungsspalte des Gebäudes, Standard dimension_custom_1).
+-- building_field (Kontierungsspalte des Gebäudes, Standard dimension_custom_1),
+-- partner_accounts_to (Vorbelegung „bis“ bei Debitoren und Kreditoren: month_end | today).
 parseSettings :: KM.KeyMap Value -> Settings
 parseSettings o =
   Settings
@@ -79,6 +80,9 @@ parseSettings o =
         Just (Array xs) | ss@(_ : _) <- mapMaybe section (toList xs) -> ss
         _ -> setSections defaultSettings
     , setBuildingField = nonEmpty "building_field" (setBuildingField defaultSettings)
+    , setPartnerTo = case nonEmpty "partner_accounts_to" (setPartnerTo defaultSettings) of
+        v | v `elem` ["month_end", "today"] -> v
+        _ -> setPartnerTo defaultSettings
     }
   where
     nonEmpty k def = case KM.lookup k o of
@@ -129,7 +133,11 @@ handler :: Settings -> Call -> Request -> IO Response
 handler settings call req = case (reqObject req, reqAction req) of
   (o, "formState") | o `elem` ["ProfitLoss", "TrialBalance", "AccountSheet", "PartnerAccounts"] -> do
     today <- utctDay <$> getCurrentTime
-    let (y, _, _) = toGregorian today
+    let (y, m, _) = toGregorian today
+        -- Debitoren und Kreditoren: „bis“ laut Einstellung (Monatsende bzw. heute)
+        to
+          | o == "PartnerAccounts" && setPartnerTo settings == "month_end" = fromGregorian y m (gregorianMonthLength y m)
+          | otherwise = today
         values = case KM.lookup "values" p of
           Just (Object v) -> v
           _ -> mempty
@@ -138,7 +146,7 @@ handler settings call req = case (reqObject req, reqAction req) of
         year = if o `elem` ["ProfitLoss", "PartnerAccounts"] then [] else preset "fiscal_year" (T.pack (show y))
     pure . response $
       object
-        [ "fields" .= object (year <> preset "period_from" (iso8601Show (fromGregorian y 1 1)) <> preset "period_to" (iso8601Show today))
+        [ "fields" .= object (year <> preset "period_from" (iso8601Show (fromGregorian y 1 1)) <> preset "period_to" (iso8601Show to))
         , "message" .= formMessage o
         ]
   ("ProfitLoss", "compute") -> do

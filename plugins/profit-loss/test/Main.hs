@@ -73,6 +73,9 @@ main = do
   check "Einstellungen: Ledger" "2L" (setLedger custom)
   check "Einstellungen: Bereiche" [Section "Erträge" Income ["REVENUE", "NON_OPERATING"]] (setSections custom)
   check "Einstellungen: Vorschlag" defaultSettings (parseSettings (KM.fromList [("sections", String "x")]))
+  check "Einstellungen: bis Monatsende (Vorschlag)" "month_end" (setPartnerTo defaultSettings)
+  check "Einstellungen: bis heute" "today" (setPartnerTo (parseSettings (KM.fromList [("partner_accounts_to", String "today")])))
+  check "Einstellungen: bis ungültig" "month_end" (setPartnerTo (parseSettings (KM.fromList [("partner_accounts_to", String "gestern")])))
   let only = computeReport custom accounts (d 2026 1 1) (d 2026 2 28) items
   check "eigene Bereiche: Ergebnis" 200150 (rpResult only)
 
