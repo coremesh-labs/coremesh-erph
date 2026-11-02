@@ -3,6 +3,7 @@ module Main (main) where
 
 import Control.Monad (unless)
 import Data.Aeson (Value (..))
+import Data.Aeson.KeyMap qualified as KM
 import Data.IORef
 import Data.Map.Strict qualified as Map
 import Data.List (nub, sort)
@@ -39,6 +40,11 @@ main = do
       kinds = recs ["code", "billing_form"] [["FO", "CLAIM"], ["RP", "INVOICE"], ["NB", "MEMO"]]
       cond t k = head (recs ["contract_type", "condition_kind"] [[t, k]])
   check "Vorlage: Sollstellung" False (isTemplate types kinds (cond "MV" "FO"))
+  -- Vermerke (0.29.0): stornierte Sollstellung zählt nicht
+  let vermerk st = KM.fromList [("contract_id", String "MV-1"), ("condition_type", String "RZ"), ("period_from", String "2026-04-01"),
+        ("period_to", String "2026-04-30"), ("due_date", String "2026-04-01"), ("amount", Number 5800), ("status", String st)]
+  check "Vermerk gebucht" True (maybe False ((== 5800) . pAmount) (posted (vermerk "POSTED")))
+  check "Vermerk storniert" True (null (posted (vermerk "REVERSED")))
   check "Vorlage: Eingangsrechnung" True (isTemplate types kinds (cond "DLHW" "FO"))
   check "Vorlage: beides, Forderung" False (isTemplate types kinds (cond "VE" "FO"))
   check "Vorlage: beides, Rechnungsposition" True (isTemplate types kinds (cond "VE" "RP"))

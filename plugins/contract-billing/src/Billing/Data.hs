@@ -211,8 +211,11 @@ data Posted = Posted
   }
   deriving stock (Show)
 
+-- | Vermerke mit Status REVERSED (Beleg im Hauptbuch storniert, contract ≥ 0.53.0)
+-- zählen nicht: die Fälligkeit gilt als nicht gebucht.
 posted :: Record -> Maybe Posted
 posted r = do
+  if text "status" r == "REVERSED" then Nothing else Just ()
   from <- day "period_from" r
   to <- day "period_to" r
   due <- day "due_date" r
