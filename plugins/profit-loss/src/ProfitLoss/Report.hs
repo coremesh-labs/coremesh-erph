@@ -48,6 +48,9 @@ data Settings = Settings
   , setSections :: [Section]
   , setBuildingField :: Text
   -- ^ Kontierungsspalte der Einzelposten mit dem Gebäude (z. B. dimension_custom_1)
+  , setPartnerTo :: Text
+  -- ^ Vorbelegung „Zeitraum bis“ bei Debitoren und Kreditoren: month_end (Ende des
+  -- laufenden Monats – im Voraus gezahlte Mieten stehen dann nicht als Guthaben da) oder today
   }
   deriving stock (Eq, Show)
 
@@ -63,6 +66,7 @@ defaultSettings =
         , Section "Neutrales Ergebnis" Income ["NON_OPERATING"]
         ]
     , setBuildingField = "dimension_custom_1"
+    , setPartnerTo = "month_end"
     }
 
 -- | Sachkonto mit Bezeichnung und Kontotyp.
