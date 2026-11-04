@@ -26,7 +26,7 @@ module ProfitLoss.Api
   ) where
 
 import Control.Exception (try)
-import Data.Aeson (Value (..), object, (.=))
+import Data.Aeson (Value (..), object, toJSON, (.=))
 import Data.Aeson.Key qualified as K
 import Data.Aeson.KeyMap qualified as KM
 import Data.ByteArray.Encoding (Base (Base64), convertToBase)
@@ -51,7 +51,7 @@ import ProfitLoss.Objects
 import ProfitLoss.Report
 
 version :: Text
-version = "0.4.0"
+version = "0.5.0"
 
 profitLossPlugin :: IORef Settings -> Plugin
 profitLossPlugin ref =
@@ -459,7 +459,10 @@ partnerList settings call cc p from to
       let message =
             kindText <> " " <> cc <> ", " <> period <> ": " <> T.pack (show (length rows)) <> " Partnerkonten, davon " <> T.pack (show open) <> " nicht ausgeglichen"
               <> T.concat [", Saldo " <> n <> " " <> formatAmountDe dec (closing k) <> " " <> currency | (k, n) <- [("D", "Debitoren"), ("K", "Kreditoren")], k `elem` kinds]
-      pure (result message partnerListColumns (partnerListRows dec (flag "only_open" p) (\a -> Map.findWithDefault "" a names) (\x -> Map.findWithDefault "" x partners) rows) header file)
+      let table = partnerListTable dec (flag "only_open" p) (\a -> Map.findWithDefault "" a names) (\x -> Map.findWithDefault "" x partners) rows
+          -- Zeile anklicken: derselbe Bericht mit dem Partner = sein Partnerkonto
+          drill = [maybe Null (\bp -> object ["partner_id" .= bp]) mp | (_, mp) <- table]
+      pure (withDrill drill (result message partnerListColumns (map fst table) header file))
   where
     acc = text "account_number" p
 
@@ -569,6 +572,11 @@ result message columns rows header file =
     ]
   where
     content = TE.decodeUtf8 (convertToBase Base64 (TE.encodeUtf8 ("\xFEFF" <> csv header columns rows)) :: ByteString)
+
+-- | Eingaben je Tabellenzeile für den Sprung aus dem Ergebnis ({"table": {…, "drill": […]}}).
+withDrill :: [Value] -> Value -> Value
+withDrill drill (Object o) | Just (Object t) <- KM.lookup "table" o = Object (KM.insert "table" (Object (KM.insert "drill" (toJSON drill) t)) o)
+withDrill _ v = v
 
 safe :: Text -> Text
 safe = T.map (\c -> if c `elem` ("/\\:*?\"<>| ()" :: String) then '-' else c)

@@ -166,6 +166,7 @@ main = do
   check "Summe Debitoren" ["", "", "Summe Debitoren (2 Partner)", "", "10,00", "5,00", "10,00", "5,00", "Soll-Saldo"] (pl !! 3)
   check "Gesamtsumme" ["", "", "Gesamtsumme (3 Partner)", "", "10,00", "5,00", "17,00", "-2,00", "Haben-Saldo"] (last pl)
   check "nur offene" 7 (length (partnerListRows 2 True (const "") (const "") pr))
+  check "Sprung ins Partnerkonto" [Just "BP1", Just "BP2", Nothing, Nothing, Just "BP3", Nothing, Nothing, Nothing] (map snd (partnerListTable 2 False (const "") (const "") pr))
 
   n <- readIORef failures
   if n > 0 then putStrLn (show n <> " Fehler") >> exitFailure else putStrLn "alle Tests bestanden"

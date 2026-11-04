@@ -22,6 +22,7 @@ module ProfitLoss.Ledger
   , partnerBalances
   , partnerListColumns
   , partnerListRows
+  , partnerListTable
   ) where
 
 import Data.List (sortOn)
@@ -199,10 +200,15 @@ partnerListColumns = ["Konto", "Bezeichnung", "Partner", "Name", "Saldovortrag",
 -- | Zeilen je Partner, Summe je Abstimmkonto, Summe Debitoren bzw. Kreditoren und
 -- Gesamtsumme; nur offene = Partner mit Saldo ≠ 0 (Summen über die gezeigten Zeilen).
 partnerListRows :: Int -> Bool -> (Text -> Text) -> (Text -> Text) -> [PartnerRow] -> [[Text]]
-partnerListRows dec onlyOpen accountName partnerName rows =
+partnerListRows dec onlyOpen accountName partnerName = map fst . partnerListTable dec onlyOpen accountName partnerName
+
+-- | Wie partnerListRows, je Zeile mit dem Geschäftspartner (Summenzeilen ohne) –
+-- für den Sprung aus der Liste in sein Partnerkonto.
+partnerListTable :: Int -> Bool -> (Text -> Text) -> (Text -> Text) -> [PartnerRow] -> [([Text], Maybe Text)]
+partnerListTable dec onlyOpen accountName partnerName rows =
   concat
     [ concat
-        [ [ [prAccount, accountName prAccount, prPartner, partnerName prPartner, amount prOpening, amount prDebit, amount prCredit, amount prClosing, balanceText prClosing]
+        [ [ ([prAccount, accountName prAccount, prPartner, partnerName prPartner, amount prOpening, amount prDebit, amount prCredit, amount prClosing, balanceText prClosing], Just prPartner)
           | PartnerRow {..} <- rs
           ]
             <> [total ("Summe Konto " <> a) [a, accountName a] rs]
@@ -219,4 +225,4 @@ partnerListRows dec onlyOpen accountName partnerName rows =
     groups f xs = Map.toAscList (Map.fromListWith (flip (<>)) [(f x, [x]) | x <- xs])
     total label lead rs =
       let o = sum (map prOpening rs); d = sum (map prDebit rs); c = sum (map prCredit rs); z = o + d - c
-       in lead <> [label <> " (" <> T.pack (show (length rs)) <> " Partner)", "", amount o, amount d, amount c, amount z, balanceText z]
+       in (lead <> [label <> " (" <> T.pack (show (length rs)) <> " Partner)", "", amount o, amount d, amount c, amount z, balanceText z], Nothing)
